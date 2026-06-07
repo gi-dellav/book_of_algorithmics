@@ -1,0 +1,88 @@
+# Binary Exponentiation
+
+Binary exponentiation (also called exponentiation by squaring) computes `a^b mod m` in O(log b) multiplications. It's the fundamental building block of RSA, Diffie-Hellman, and primality testing.
+
+## The Algorithm
+
+Naive: multiply a by itself b times → O(b) operations. For b = 2^2048 (RSA), that's the age of the universe.
+
+Binary: square repeatedly, multiplying by a when the corresponding bit of b is 1.
+
+```
+a^13 = a^(1101₂) = a^8 × a^4 × a^1
+```
+
+Start with `result = 1, base = a`. For each bit of b (from LSB to MSB):
+- If bit is 1: `result = result × base mod m`
+- `base = base² mod m`
+
+This requires log₂(b) squarings and (on average) log₂(b)/2 multiplications. For 2048-bit RSA, that's ~3072 modular multiplications — fast enough to run in microseconds.
+
+## Recursive Implementation
+
+```c
+uint64_t modpow_rec(uint64_t a, uint64_t b, uint64_t m) {
+    if (b == 0) return 1 % m;
+    uint64_t half = modpow_rec(a, b / 2, m);
+    uint64_t result = (__int128)half * half % m;
+    if (b & 1)
+        result = (__int128)result * a % m;
+    return result;
+}
+```
+
+## Iterative Implementation
+
+```c
+uint64_t modpow(uint64_t a, uint64_t b, uint64_t m) {
+    uint64_t result = 1 % m;
+    uint64_t base = a % m;
+    while (b) {
+        if (b & 1)
+            result = (__int128)result * base % m;
+        base = (__int128)base * base % m;
+        b >>= 1;
+    }
+    return result;
+}
+```
+
+The `(__int128)` cast ensures the multiplication doesn't overflow before the modulo — essential when m > 2^32.
+
+## Performance on Zen 2
+
+Computing a modular inverse `a^(p−2) mod p` for a 30-bit prime:
+
+- Naive (b multiplications): ~330 ns (benchmarked with b ≈ 10^9)
+- Binary exponentiation: ~170 ns (30 squarings + ~15 multiplications)
+- Extended Euclid (next article): ~135 ns
+
+Binary exponentiation is the baseline. Extended Euclid is ~20% faster for modular inverse specifically. But binary exponentiation generalizes to any exponent, not just inverses.
+
+## Montgomery Modular Multiplication
+
+The inner loop of `modpow` does many modular multiplications. Each one does a 128-bit multiply followed by a 64-bit division (the modulo). The division is 10–40× slower than the multiply.
+
+Montgomery multiplication (covered in detail in `montgomery.md`) eliminates the modulo operation by representing numbers in "Montgomery space" where reduction is done with bitwise operations and multiplication, not division. The speedup is dramatic: ~158 ns per modular inverse with Montgomery + binary exponentiation, vs. ~170 ns without.
+
+## Constant-Time Considerations
+
+For cryptographic use, `modpow` must run in **constant time** (no secret-dependent branching). Otherwise, an attacker can measure the timing of exponentiation and extract the secret exponent b.
+
+Constant-time binary exponentiation:
+```c
+uint64_t modpow_ct(uint64_t a, uint64_t b, uint64_t m) {
+    uint64_t result = 1 % m;
+    uint64_t base = a % m;
+    while (b) {
+        // Always multiply, but conditionally use the result
+        uint64_t tmp = (__int128)result * base % m;
+        result = (b & 1) ? tmp : result;  // cmov, not branch
+        base = (__int128)base * base % m;
+        b >>= 1;
+    }
+    return result;
+}
+```
+
+The ternary compiles to `cmov` (not a branch), assuming the compiler doesn't "optimize" it. Check the assembly. For serious cryptography, use a vetted library (OpenSSL, libsodium, BoringSSL) — constant-time programming has subtle pitfalls.
