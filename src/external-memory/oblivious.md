@@ -10,20 +10,22 @@ No explicit blocking. No B or M parameters in the code. The algorithm's I/O comp
 
 ## Matrix Transposition
 
-```c
-void transpose_recursive(int *A, int *B, int n, int row_stride, int col_stride) {
-    if (n <= 64) {  // Base case: fits in L1
-        for (int i = 0; i < n; i++)
-            for (int j = 0; j < n; j++)
-                B[j * col_stride + i] = A[i * row_stride + j];
+```rust
+unsafe fn transpose_recursive(a: *const i32, b: *mut i32, n: i32, row_stride: i32, col_stride: i32) {
+    if n <= 64 {  // Base case: fits in L1
+        for i in 0..n {
+            for j in 0..n {
+                *b.offset((j * col_stride + i) as isize) = *a.offset((i * row_stride + j) as isize);
+            }
+        }
         return;
     }
-    int half = n / 2;
+    let half = n / 2;
     // Recursively transpose 4 quadrants
-    transpose_recursive(A, B, half, row_stride, col_stride);
-    transpose_recursive(A + half, B + half * col_stride, half, row_stride, col_stride);
-    transpose_recursive(A + half * row_stride, B + half, half, row_stride, col_stride);
-    transpose_recursive(A + half * row_stride + half, B + half * col_stride + half, half, row_stride, col_stride);
+    transpose_recursive(a, b, half, row_stride, col_stride);
+    transpose_recursive(a.offset(half as isize), b.offset((half * col_stride) as isize), half, row_stride, col_stride);
+    transpose_recursive(a.offset((half * row_stride) as isize), b.offset(half as isize), half, row_stride, col_stride);
+    transpose_recursive(a.offset((half * row_stride + half) as isize), b.offset((half * col_stride + half) as isize), half, row_stride, col_stride);
 }
 ```
 
@@ -38,19 +40,23 @@ Solution: I/O(n) = Θ(n²/B) when n² ≫ M — the same as the explicitly-block
 
 ## Cache-Oblivious Matrix Multiplication
 
-```c
-void matmul_recursive(float *C, float *A, float *B, int n, int stride) {
-    if (n <= 32) {  // Base case
-        for (int i = 0; i < n; i++)
-            for (int k = 0; k < n; k++)
-                for (int j = 0; j < n; j++)
-                    C[i*stride + j] += A[i*stride + k] * B[k*stride + j];
+```rust
+unsafe fn matmul_recursive(c: *mut f32, a: *const f32, b: *const f32, n: i32, stride: i32) {
+    if n <= 32 {  // Base case
+        for i in 0..n {
+            for k in 0..n {
+                for j in 0..n {
+                    *c.offset((i * stride + j) as isize) +=
+                        *a.offset((i * stride + k) as isize) * *b.offset((k * stride + j) as isize);
+                }
+            }
+        }
         return;
     }
-    int half = n / 2;
+    let half = n / 2;
     // 8 recursive multiplications (standard Strassen-like decomposition)
-    matmul_recursive(C, A, B, half, stride);              // C11 += A11 × B11
-    matmul_recursive(C + half, A + half, B, half, stride); // C12 += A21 × B11 ??? (Actually more complex...)
+    matmul_recursive(c, a, b, half, stride);              // C11 += A11 × B11
+    matmul_recursive(c.offset(half as isize), a.offset(half as isize), b, half, stride); // C12 += A21 × B11 ??? (Actually more complex...)
     // ... (8 subproblems total for standard multiplication)
 }
 ```

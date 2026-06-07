@@ -14,12 +14,13 @@ If 10% of your program is serial, maximum speedup is 1/0.10 = 10×, regardless o
 
 Two threads write to different variables that happen to be in the same cache line (64 bytes). The cache coherence protocol (MESI) ping-pongs the line between cores, even though they're accessing different data.
 
-```c
-struct {
-    int counter_a;  // Thread A increments this
-    int counter_b;  // Thread B increments this
+```rust
+struct Shared {
+    counter_a: i32,  // Thread A increments this
+    counter_b: i32,  // Thread B increments this
     // counter_a and counter_b are 4 bytes apart → same cache line
-} shared;
+}
+// Shared { counter_a: 0, counter_b: 0 }
 
 // Performance: each increment invalidates the other thread's cache line.
 // Throughput drops from 1 increment/7ns to 1 increment/50ns.
@@ -29,10 +30,11 @@ struct {
 
 **Fix**: pad shared variables to 64-byte alignment:
 
-```c
-struct alignas(64) PaddedCounter { int value; };
-PaddedCounter counter_a;
-PaddedCounter counter_b;
+```rust
+#[repr(align(64))]
+struct PaddedCounter { value: i32 }
+static mut counter_a: PaddedCounter = PaddedCounter { value: 0 };
+static mut counter_b: PaddedCounter = PaddedCounter { value: 0 };
 ```
 
 Or in C++: `alignas(std::hardware_destructive_interference_size)`.

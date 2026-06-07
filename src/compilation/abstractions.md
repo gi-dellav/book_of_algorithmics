@@ -14,19 +14,25 @@ Non-zero-cost abstractions: `std::function` (type erasure has overhead), `std::s
 
 ## Virtual Functions
 
-```cpp
-class Base {
-public:
-    virtual int compute() const = 0;
-};
+```rust
+trait Compute {
+    fn compute(&self) -> i32;
+}
 
-class Derived : public Base {
-public:
-    int compute() const override { return 42; }
-};
+struct Derived;
 
-int call_virtual(const Base &obj) {
-    return obj.compute();  // Indirect call through vtable
+impl Compute for Derived {
+    fn compute(&self) -> i32 { 42 }
+}
+
+// Dynamic dispatch (vtable lookup + indirect call, like C++ virtual):
+fn call_virtual(obj: &dyn Compute) -> i32 {
+    obj.compute()  // Indirect call through vtable
+}
+
+// Static dispatch (zero-cost alternative — monomorphized, fully inlined):
+fn call_static<T: Compute>(obj: &T) -> i32 {
+    obj.compute()  // Direct call after monomorphization
 }
 ```
 
@@ -39,9 +45,18 @@ Alternatives:
 
 ## `std::function`
 
-```cpp
-std::function<int(int)> func = [](int x) { return x * 2; };
-int result = func(5);  // Type-erased call — may involve heap allocation
+```rust
+// Heap-allocated closure (like std::function — may allocate):
+let func: Box<dyn Fn(i32) -> i32> = Box::new(|x| x * 2);
+let result = func(5);  // Indirect call — may involve heap allocation
+
+// Zero-cost alternatives:
+// 1. Generic parameter (fully inlined, zero cost):
+fn apply<F: Fn(i32) -> i32>(f: F, x: i32) -> i32 { f(x) }
+
+// 2. Raw function pointer (direct call if known at compile time):
+let func: fn(i32) -> i32 = |x| x * 2;
+let result = func(5);
 ```
 
 Cost: `std::function` uses type erasure. For small callables (up to ~32 bytes depending on implementation), the object is stored inline (no heap allocation). For larger callables, a heap allocation occurs. Every call goes through an indirect function pointer.
@@ -55,18 +70,26 @@ Alternatives:
 
 `std::list`, `std::map`, `std::set`, `std::unordered_map` are all node-based containers. Each element is a separately allocated node with pointers to neighbors. Iterating over them chases pointers through memory, incurring a cache miss at every node (or every few nodes, if the allocator placed them nearby by chance).
 
-```cpp
-std::list<int> lst = {1, 2, 3, 4, 5};
-for (int x : lst)  // Cache miss on every element
+```rust
+// Rust: LinkedList is node-based, same cache issues as std::list.
+use std::collections::LinkedList;
+
+let lst: LinkedList<i32> = LinkedList::from([1, 2, 3, 4, 5]);
+let mut sum = 0;
+for x in &lst {  // Cache miss on every element
     sum += x;
+}
 ```
 
 The `std::vector` equivalent does a sequential scan through contiguous memory:
 
-```cpp
-std::vector<int> vec = {1, 2, 3, 4, 5};
-for (int x : vec)  // Cache hits after the first element
+```rust
+// Rust: Vec is contiguous, like std::vector.
+let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
+let mut sum = 0;
+for &x in &vec {  // Cache hits after the first element
     sum += x;
+}
 ```
 
 For iteration-heavy workloads, `std::vector` can be 10–100× faster than `std::list`, even when `std::list` theoretically has better algorithmic complexity for the insertion pattern. Cache locality dominates.
@@ -77,32 +100,35 @@ For iteration-heavy workloads, `std::vector` can be 10–100× faster than `std:
 
 `std::vector::at(i)` throws on out-of-bounds access. `std::vector::operator[](i)` does not. The performance difference is real: `at()` includes a bounds check and a conditional branch.
 
-```cpp
-// With bounds check (branch):
-for (int i = 0; i < n; i++)
-    sum += vec.at(i);  // Conditional branch on every iteration
+```rust
+// With bounds check (branch in debug, may be elided in release):
+for i in 0..n {
+    sum += vec[i];  // Potential bounds check
+}
 
-// Without bounds check:
-for (int i = 0; i < n; i++)
-    sum += vec[i];  // No branch
+// Without bounds check (unsafe, no branch):
+for i in 0..n {
+    sum += unsafe { vec.get_unchecked(i) };  // No bounds check
+}
 
-// Even better:
-for (int x : vec)  // No bounds check, no indexing
+// Even better (iterator — no bounds check, no indexing):
+for &x in &vec {  // No bounds check, no indexing
     sum += x;
+}
 ```
 
 Use `operator[]` and range-based for loops in hot code. Reserve `at()` for debugging or when bounds checking is genuinely needed (untrusted input).
 
 ## `std::min` and Branchless Code
 
-```cpp
-int smaller = std::min(a, b);
+```rust
+let smaller = std::cmp::min(a, b);
 ```
 
 `std::min` typically generates a conditional move (`cmov`), which is branchless and fast. But this depends on the compiler and the context. If `std::min` isn't generating `cmov`, write:
 
-```cpp
-int smaller = (a < b) ? a : b;  // Check assembly — should be cmov
+```rust
+let smaller = if a < b { a } else { b };  // Check assembly — should be cmov
 ```
 
 ## Designing Abstraction-Friendly Interfaces

@@ -4,11 +4,11 @@ Mutual exclusion is the fundamental synchronization primitive: ensure that only 
 
 ## The Problem: Race Conditions
 
-```c
-int counter = 0;  // Shared
+```rust
+static mut COUNTER: i32 = 0;  // Shared
 
-void increment() {
-    counter++;  // Compiles to: mov eax, [counter]; inc eax; mov [counter], eax
+unsafe fn increment() {
+    COUNTER += 1;  // Compiles to: mov eax, [COUNTER]; inc eax; mov [COUNTER], eax
 }
 ```
 
@@ -26,19 +26,18 @@ The fix: wrap `counter++` in a critical section protected by a mutex.
 
 ## Mutex (pthreads)
 
-```c
-#include <pthread.h>
+```rust
+use std::sync::Mutex;
+use std::sync::Arc;
+use std::thread;
 
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-int counter = 0;
+let mutex = Arc::new(Mutex::new(0));
 
-void *increment(void *arg) {
-    for (int i = 0; i < 1000000; i++) {
-        pthread_mutex_lock(&mutex);
-        counter++;
-        pthread_mutex_unlock(&mutex);
+fn increment(m: Arc<Mutex<i32>>) {
+    for _ in 0..1000000 {
+        let mut counter = m.lock().unwrap();
+        *counter += 1;
     }
-    return NULL;
 }
 ```
 
@@ -48,28 +47,36 @@ The mutex guarantees: at most one thread is inside the critical section at any t
 
 On Linux, `pthread_mutex_t` is built on the **futex** (fast userspace mutex) system call. The fast path (no contention) executes entirely in user space:
 
-```c
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::arch::asm;
+
 // Simplified futex-based mutex (not the actual implementation)
-void mutex_lock(int *lock) {
-    while (true) {
+unsafe fn mutex_lock(lock: &AtomicI32) {
+    loop {
         // Fast path: try to acquire with an atomic compare-and-swap
-        if (__sync_bool_compare_and_swap(lock, 0, 1))
+        if lock.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
             return;  // Acquired without kernel involvement
+        }
         
         // Slow path: the mutex is held. Wait on the futex.
         // The FUTEX_WAIT syscall tells the kernel to sleep this thread
         // until another thread calls FUTEX_WAKE on this address.
-        if (*lock == 1) {
-            futex_wait(lock, 1);  // Sleep until lock changes
+        if lock.load(Ordering::Relaxed) == 1 {
+            unsafe {
+                let addr = lock as *const AtomicI32 as *const i32;
+                libc::syscall(libc::SYS_futex, addr, libc::FUTEX_WAIT, 1, 0, 0, 0);
+            }
         }
         // Loop back and try again
     }
 }
 
-void mutex_unlock(int *lock) {
-    *lock = 0;
+unsafe fn mutex_unlock(lock: &AtomicI32) {
+    lock.store(0, Ordering::Release);
     // Wake one waiting thread (if any)
-    futex_wake(lock, 1);
+    let addr = lock as *const AtomicI32 as *const i32;
+    libc::syscall(libc::SYS_futex, addr, libc::FUTEX_WAKE, 1, 0, 0, 0);
 }
 ```
 
@@ -79,17 +86,20 @@ The atomic compare-and-swap (`lock cmpxchg`) on x86 takes ~8 cycles. If unconten
 
 A spinlock is a mutex that never sleeps — it repeatedly checks the lock in a busy loop:
 
-```c
-void spinlock_lock(atomic_int *lock) {
-    while (atomic_exchange(lock, 1) == 1) {
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::hint;
+
+fn spinlock_lock(lock: &AtomicI32) {
+    while lock.swap(1, Ordering::Acquire) == 1 {
         // Spin: repeatedly check
         // On x86: 'pause' instruction to avoid memory order mis-speculation
-        __builtin_ia32_pause();
+        hint::spin_loop();
     }
 }
 
-void spinlock_unlock(atomic_int *lock) {
-    atomic_store(lock, 0);
+fn spinlock_unlock(lock: &AtomicI32) {
+    lock.store(0, Ordering::Release);
 }
 ```
 
@@ -101,10 +111,10 @@ The `PAUSE` instruction on x86 is crucial: it tells the CPU that this is a spin-
 
 Two threads, each holding a lock the other needs:
 
-```c
+```rust
 // Thread A                          // Thread B
-pthread_mutex_lock(&mutex1);         pthread_mutex_lock(&mutex2);
-pthread_mutex_lock(&mutex2);         pthread_mutex_lock(&mutex1);
+let _l1 = mutex1.lock().unwrap();     let _l2 = mutex2.lock().unwrap();
+let _l2 = mutex2.lock().unwrap();     let _l1 = mutex1.lock().unwrap();
 // Deadlock: A waits for mutex2, B waits for mutex1
 ```
 
@@ -117,18 +127,16 @@ Prevention strategies:
 
 A read-write lock allows multiple concurrent readers but only one writer:
 
-```c
-pthread_rwlock_t rwlock = PTHREAD_RWLOCK_INITIALIZER;
+```rust
+use std::sync::RwLock;
+
+let rwlock = RwLock::new(0);
 
 // Reader
-pthread_rwlock_rdlock(&rwlock);
-int val = shared_data;
-pthread_rwlock_unlock(&rwlock);
+let val = *rwlock.read().unwrap();
 
 // Writer
-pthread_rwlock_wrlock(&rwlock);
-shared_data = new_val;
-pthread_rwlock_unlock(&rwlock);
+*rwlock.write().unwrap() = new_val;
 ```
 
 Performance: uncontended rdlock is ~20 ns; wrlock is ~25 ns. But the real cost is contention — many readers can starve a writer (if a new reader arrives before the previous reader finishes, the writer never gets the lock). Some implementations offer writer-preference variants.

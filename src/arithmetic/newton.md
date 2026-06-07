@@ -18,13 +18,13 @@ Set `f(x) = x² − a`. The root is `√a`. Then:
 - `f'(x) = 2x`
 - `x_{n+1} = x − (x² − a) / (2x) = (x + a/x) / 2`
 
-```c
-float sqrt_newton(float a) {
-    float x = a / 2.0f;  // Initial guess
-    for (int i = 0; i < 4; i++) {
-        x = (x + a / x) / 2.0f;
+```rust
+fn sqrt_newton(a: f32) -> f32 {
+    let mut x = a / 2.0;  // Initial guess
+    for _ in 0..4 {
+        x = (x + a / x) / 2.0;
     }
-    return x;
+    x
 }
 ```
 
@@ -56,12 +56,12 @@ Set `f(y) = 1/y² − a`. The root is `1/√a`. Then:
 - `f'(y) = −2/y³`
 - `y_{n+1} = y − (1/y² − a) / (−2/y³) = y × (3 − a×y²) / 2`
 
-```c
-float rsqrt_newton(float a) {
-    float y = 1.0f / sqrtf(a);  // Initial guess (uses hardware sqrt)
-    y = y * (3.0f - a * y * y) * 0.5f;  // One Newton iteration
-    y = y * (3.0f - a * y * y) * 0.5f;  // Second iteration
-    return y;
+```rust
+fn rsqrt_newton(a: f32) -> f32 {
+    let mut y = 1.0 / a.sqrt();  // Initial guess (uses hardware sqrt)
+    y = y * (3.0 - a * y * y) * 0.5;  // One Newton iteration
+    y = y * (3.0 - a * y * y) * 0.5;  // Second iteration
+    y
 }
 ```
 

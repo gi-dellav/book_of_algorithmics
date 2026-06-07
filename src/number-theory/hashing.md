@@ -17,13 +17,14 @@ No requirement for collision resistance, preimage resistance, or any cryptograph
 ### Common Algorithms
 
 **FNV-1a** (Fowler-Noll-Vo): Simple multiplier-XOR chain.
-```c
-uint64_t fnv1a(const uint8_t *data, size_t len, uint64_t h = 0xcbf29ce484222325ull) {
-    for (size_t i = 0; i < len; i++) {
-        h ^= data[i];
-        h *= 0x100000001b3ull;  // FNV prime
+```rust
+fn fnv1a(data: &[u8], h: u64) -> u64 {
+    let mut h = h;
+    for &byte in data {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3);  // FNV prime
     }
-    return h;
+    h
 }
 ```
 ~2 cycles per byte on Zen 2. Good for short keys. Poor at bulk hashing (not SIMD-friendly).

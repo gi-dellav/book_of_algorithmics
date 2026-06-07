@@ -18,13 +18,14 @@ Each decision affects lookup latency, insertion throughput, memory overhead, and
 
 **Chaining**: each bucket is a linked list (or balanced tree). Collisions append to the list. Used by `std::unordered_map`.
 
-```c
+```rust
+#[repr(C)]
 struct ChainNode {
-    Key key;
-    Value value;
-    ChainNode *next;
-};
-ChainNode *table[capacity];  // Array of linked list heads
+    key: i64,
+    value: i64,
+    next: *mut ChainNode,
+}
+// table: [*mut ChainNode; capacity]  -- Array of linked list heads
 ```
 
 Lookup: hash → bucket index → walk the chain. Insertion: hash → bucket → prepend to chain. Deletion: walk chain, unlink node.
@@ -33,13 +34,14 @@ Advantages: simple, handles high load factors gracefully (chains just grow), del
 
 **Open addressing**: all keys are stored directly in the table array. Collisions probe for the next available slot. Used by Python `dict`, Go `map`, Rust `HashMap`, and `absl::flat_hash_map`.
 
-```c
+```rust
+#[repr(C)]
 struct Slot {
-    Key key;
-    Value value;
-    bool occupied;  // Or use a sentinel key value
-};
-Slot table[capacity];
+    key: i64,
+    value: i64,
+    occupied: bool,
+}
+// table: [Slot; capacity]
 ```
 
 Lookup: hash → index. If `table[index].key == key`: found. If `table[index].occupied == false`: not found. Otherwise, probe to the next slot.
@@ -58,30 +60,31 @@ Open addressing has better cache behavior (contiguous array, no pointer chasing)
 
 Robin Hood insertion:
 
-```c
-void robin_hood_insert(Slot *table, int cap, Key key, Value val) {
-    uint64_t h = hash(key);
-    int idx = h % cap;
-    int dist = 0;  // Distance from ideal position
-    
-    while (true) {
-        if (!table[idx].occupied) {
-            table[idx].key = key;
-            table[idx].value = val;
-            table[idx].occupied = true;
-            return;
+```rust
+fn robin_hood_insert(table: *mut Slot, cap: usize, key: i64, val: i64) {
+    unsafe {
+        let h = hash(key);
+        let mut idx = (h as usize) % cap;
+        let mut dist: usize = 0;
+
+        loop {
+            if !(*table.add(idx)).occupied {
+                (*table.add(idx)).key = key;
+                (*table.add(idx)).value = val;
+                (*table.add(idx)).occupied = true;
+                return;
+            }
+
+            let existing_dist = (idx + cap - ((hash((*table.add(idx)).key) as usize) % cap)) % cap;
+            if dist > existing_dist {
+                std::ptr::swap(&mut (*table.add(idx)).key, &mut key);
+                std::ptr::swap(&mut (*table.add(idx)).value, &mut val);
+                dist = existing_dist;
+            }
+
+            idx = (idx + 1) % cap;
+            dist += 1;
         }
-        
-        int existing_dist = (idx - (hash(table[idx].key) % cap) + cap) % cap;
-        if (dist > existing_dist) {
-            // Swap: the new key is further from its ideal position
-            swap(table[idx].key, key);
-            swap(table[idx].value, val);
-            dist = existing_dist;  // Continue with the displaced key
-        }
-        
-        idx = (idx + 1) % cap;
-        dist++;
     }
 }
 ```
@@ -96,55 +99,53 @@ Performance: Robin Hood hashing has ~10% slower insertions (swaps) but ~20% fast
 
 The table is divided into **groups** of 16 slots. A separate **metadata** array stores a 1-byte hash prefix (the top 7 bits of the hash) per slot. A group's metadata is 16 bytes — one SSE register.
 
-```c
+```rust
+#[repr(C)]
 struct SwissTable {
-    Key keys[capacity];
-    Value values[capacity];
-    uint8_t metadata[capacity];  // Top 7 bits of hash; 0x80 = empty, 0x7F = tombstone
-};
+    keys: *mut i64,        // [capacity] i64 keys
+    values: *mut i64,      // [capacity] i64 values
+    metadata: *mut u8,     // [capacity] u8: top 7 bits of hash; 0x80 = empty, 0x7F = tombstone
+}
 ```
 
 Lookup:
 
-```c
-Value swiss_lookup(SwissTable *t, int cap, Key key) {
-    uint64_t h = hash(key);
-    uint8_t h1 = h >> 57;  // Top 7 bits as the "signature"
-    int group_idx = (h % cap) / 16;
-    
-    while (true) {
-        // Load the metadata for this group of 16
-        __m128i meta = _mm_loadu_si128((__m128i*)&t->metadata[group_idx * 16]);
-        
-        // Create a vector where each byte = h1
-        __m128i target = _mm_set1_epi8(h1);
-        
-        // Compare: which slots have a matching signature?
-        __m128i match = _mm_cmpeq_epi8(meta, target);
-        int mask = _mm_movemask_epi8(match);
-        
-        if (mask != 0) {
-            // Possible matches: check each candidate
-            while (mask) {
-                int bit = __builtin_ctz(mask);
-                int idx = group_idx * 16 + bit;
-                if (t->keys[idx] == key)
-                    return t->values[idx];  // Found
-                mask &= mask - 1;  // Clear lowest set bit
+```rust
+use std::arch::x86_64::*;
+
+fn swiss_lookup(t: *const SwissTable, cap: usize, key: i64) -> i64 {
+    unsafe {
+        let h = hash(key);
+        let h1 = (h >> 57) as u8;
+        let mut group_idx = ((h as usize) % cap) / 16;
+
+        loop {
+            let meta = _mm_loadu_si128((*t).metadata.add(group_idx * 16) as *const __m128i);
+            let target = _mm_set1_epi8(h1 as i8);
+            let match_ = _mm_cmpeq_epi8(meta, target);
+            let mut mask = _mm_movemask_epi8(match_) as u32;
+
+            if mask != 0 {
+                while mask != 0 {
+                    let bit = mask.trailing_zeros() as usize;
+                    let idx = group_idx * 16 + bit;
+                    if *(*t).keys.add(idx) == key {
+                        return *(*t).values.add(idx);
+                    }
+                    mask &= mask - 1;
+                }
             }
+
+            let empty = _mm_set1_epi8(0x80u8 as i8);
+            let is_empty = _mm_cmpeq_epi8(meta, empty);
+            let empty_mask = _mm_movemask_epi8(is_empty) as u32;
+
+            if empty_mask != 0 {
+                return -1; // NOT_FOUND
+            }
+
+            group_idx = (group_idx + 1) % (cap / 16);
         }
-        
-        // Check for empty slots (metadata byte = 0x80)
-        __m128i empty = _mm_set1_epi8(0x80);
-        __m128i is_empty = _mm_cmpeq_epi8(meta, empty);
-        int empty_mask = _mm_movemask_epi8(is_empty);
-        
-        if (empty_mask != 0) {
-            return NOT_FOUND;  // Key is not in the table
-        }
-        
-        // Probe to the next group
-        group_idx = (group_idx + 1) % (cap / 16);
     }
 }
 ```
@@ -180,10 +181,9 @@ The hash function must be:
 
 For integer keys: **Fibonacci hashing** (Knuth's multiplicative method):
 
-```c
-uint64_t fibonacci_hash(uint64_t key) {
-    // Multiply by 2^64 / φ ≈ 11400714819323198485
-    return key * 11400714819323198485ull;
+```rust
+fn fibonacci_hash(key: u64) -> u64 {
+    key.wrapping_mul(11400714819323198485u64)
 }
 ```
 

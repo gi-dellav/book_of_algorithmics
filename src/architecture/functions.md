@@ -47,10 +47,10 @@ ARM64 (AArch64 ABI) is similar but with different register mappings:
 
 ## Function Prologue and Epilogue
 
-```c
-long foo(long a, long b) {
-    long c = a + b;
-    return c * c;
+```rust
+fn foo(a: i64, b: i64) -> i64 {
+    let c = a + b;
+    c * c
 }
 ```
 
@@ -67,10 +67,10 @@ No stack frame needed. The function is a **leaf** (calls no other functions) and
 
 Now a function that needs the stack:
 
-```c
-long bar(long a, long b) {
-    long c = foo(a, b);     // call to another function
-    return c + a + b;
+```rust
+fn bar(a: i64, b: i64) -> i64 {
+    let c = foo(a, b);     // call to another function
+    c + a + b
 }
 ```
 
@@ -110,13 +110,14 @@ bar:
 
 Inlining replaces a function call with the body of the callee. It eliminates call/ret overhead, enables cross-function optimizations (constant propagation, dead code elimination), and reduces register pressure from calling conventions.
 
-```c
-static inline long foo_inline(long a, long b) {
-    return (a + b) * (a + b);
+```rust
+#[inline]
+fn foo_inline(a: i64, b: i64) -> i64 {
+    (a + b) * (a + b)
 }
 
-long baz(long a, long b) {
-    return foo_inline(a, b);
+fn baz(a: i64, b: i64) -> i64 {
+    foo_inline(a, b)
 }
 ```
 
@@ -143,10 +144,10 @@ Over-inlining bloats code size, increasing I-cache pressure. Profile-guided opti
 
 When a function's last action is calling another function, the compiler can replace `call` + `ret` with a single `jmp`:
 
-```c
-long tail_add(long n, long acc) {
-    if (n == 0) return acc;
-    return tail_add(n - 1, acc + 1);
+```rust
+fn tail_add(n: i64, acc: i64) -> i64 {
+    if n == 0 { return acc; }
+    tail_add(n - 1, acc + 1)
 }
 ```
 

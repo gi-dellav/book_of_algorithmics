@@ -12,15 +12,18 @@ You don't need to *write* assembly. You need to *read* it. When the compiler pro
 
 A concrete example. Consider these two loops:
 
-```c
+```rust
 // Version A
-for (int i = 0; i < n; i++)
-    if (a[i] > threshold)
+for i in 0..n {
+    if a[i] > threshold {
         sum += a[i];
+    }
+}
 
 // Version B
-for (int i = 0; i < n; i++)
-    sum += (a[i] > threshold) ? a[i] : 0;
+for i in 0..n {
+    sum += if a[i] > threshold { a[i] } else { 0 };
+}
 ```
 
 They compute the same result. Which is faster? If you understand branch prediction (covered in Chapter 3), you know the answer depends on whether `a[i] > threshold` is predictable. If you can read assembly, you can see that Version A compiles to a conditional jump and Version B compiles to a conditional move — and conditional moves don't depend on prediction at all.

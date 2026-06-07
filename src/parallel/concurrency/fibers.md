@@ -8,10 +8,10 @@ A fiber (or coroutine) is a user-space thread. The OS doesn't know fibers exist 
 
 This is **M:N scheduling**: M fibers are multiplexed onto N OS threads. The runtime manages fiber creation, scheduling, and context switching, all in user space.
 
-```c
+```rust
 // Conceptual fiber API (not a real library)
-fiber_t f1 = fiber_create(my_func, arg);
-fiber_t f2 = fiber_create(other_func, arg2);
+let f1 = fiber_create(my_func, arg);
+let f2 = fiber_create(other_func, arg2);
 fiber_yield();  // Give up the CPU, let another fiber run
 fiber_join(f1);
 ```

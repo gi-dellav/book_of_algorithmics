@@ -6,22 +6,25 @@ Some optimizations can't be decided by the compiler at build time — they depen
 
 The compiler's unrolling heuristic may be too aggressive or too conservative. You can control it:
 
-```c
-#pragma GCC unroll 8
-for (int i = 0; i < n; i++) {
-    // Unroll this loop 8×
+```rust
+// Rust: manually unroll for guaranteed control, or rely on LLVM heuristics.
+// The compiler backend uses heuristics; manual unrolling gives precise control.
+
+// Unroll 8× by hand:
+for i in (0..n).step_by(8) {
+    // Body repeated for i, i+1, ..., i+7 (manually expanded)
 }
 
-#pragma GCC no_unroll
-for (int i = 0; i < n; i++) {
-    // Do not unroll (good for large loop bodies where I-cache matters)
+// Do not unroll — regular loop, compiler respects body size:
+for i in 0..n {
+    // Large body where I-cache matters more than loop overhead
 }
 ```
 
 Or with Clang/LLVM:
-```c
-#pragma clang loop unroll_count(8)
-#pragma clang loop unroll(disable)
+```rust
+// Rust via LLVM: the backend applies similar heuristics.
+// For explicit control, manually unroll (see above).
 ```
 
 Unrolling helps when:
@@ -38,9 +41,12 @@ When in doubt, measure. The difference is usually small (<10%), but sometimes th
 
 ## Inline Control
 
-```c
-__attribute__((always_inline)) inline void hot_function() { ... }
-__attribute__((noinline)) void cold_function() { ... }
+```rust
+#[inline(always)]
+fn hot_function() { /* ... */ }
+
+#[inline(never)]
+fn cold_function() { /* ... */ }
 ```
 
 Use `always_inline` for tiny functions in hot paths where the call overhead is significant relative to the body. Use `noinline` for:
@@ -49,19 +55,25 @@ Use `always_inline` for tiny functions in hot paths where the call overhead is s
 - Functions you want to profile individually (perf shows function-level counts).
 
 C++17 adds:
-```cpp
-[[gnu::always_inline]] inline void hot();
-[[gnu::noinline]] void cold();
+```rust
+#[inline(always)]
+fn hot() { /* ... */ }
+
+#[inline(never)]
+fn cold() { /* ... */ }
 ```
 
 ## Branch Hints
 
-```cpp
-if (__builtin_expect(ptr != nullptr, 1)) {  // Likely
+```rust
+// Nightly branch hints:
+use std::intrinsics::{likely, unlikely};
+
+if likely(!ptr.is_null()) {  // Likely
     // hot path
 }
 
-if (x == 0) [[unlikely]] {  // C++20
+if unlikely(x == 0) {  // Equivalent to C++20 [[unlikely]]
     // cold path
 }
 ```
@@ -72,10 +84,13 @@ These affect code layout (cold path moved out of line), not branch prediction on
 
 The `restrict` keyword tells the compiler that a pointer is the *only* way to access the memory it points to during its lifetime. Two restricted pointers never alias (point to overlapping memory).
 
-```c
-void add_arrays(int *restrict a, int *restrict b, int *restrict c, int n) {
-    for (int i = 0; i < n; i++)
+```rust
+fn add_arrays(a: &[i32], b: &[i32], c: &mut [i32]) {
+    // Rust's &mut guarantees no aliasing with a or b (borrow rules).
+    // Equivalent to `restrict` on all three pointer parameters.
+    for i in 0..c.len() {
         c[i] = a[i] + b[i];
+    }
 }
 ```
 
@@ -89,12 +104,14 @@ With `restrict`, the compiler assumes no aliasing. It can vectorize, reorder, an
 
 You can communicate runtime invariants to the compiler:
 
-```c
-__builtin_assume(n % 8 == 0);  // Clang: n is a multiple of 8
-if (n % 8 != 0) __builtin_unreachable();  // GCC/Clang: this code is never reached
+```rust
+// Tell the compiler that n is a multiple of 8:
+unsafe { std::hint::assert_unchecked(n % 8 == 0); }
 
-// C++23:
-[[assume(n % 8 == 0)]];
+// Or mark unreachable paths:
+if n % 8 != 0 { unsafe { std::hint::unreachable_unchecked(); } }
+
+// No C++23-style [[assume]] in stable Rust yet.
 ```
 
 The compiler can use these to:
@@ -124,13 +141,31 @@ Clang supports **CSIRPGO** (Context-Sensitive IR-based PGO) which records the fu
 
 When a function can be optimized differently for different hardware, you can provide multiple implementations and dispatch at runtime:
 
-```c
-__attribute__((target_clones("default", "avx2", "avx512f")))
-float dot_product(const float *a, const float *b, int n) {
-    float sum = 0;
-    for (int i = 0; i < n; i++)
-        sum += a[i] * b[i];
-    return sum;
+```rust
+// Rust: use #[target_feature] with runtime feature detection:
+#[target_feature(enable = "avx2")]
+unsafe fn dot_product_avx2(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+#[target_feature(enable = "avx512f")]
+unsafe fn dot_product_avx512f(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+#[inline(never)]
+fn dot_product_default(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+    if is_x86_feature_detected!("avx512f") {
+        unsafe { dot_product_avx512f(a, b) }
+    } else if is_x86_feature_detected!("avx2") {
+        unsafe { dot_product_avx2(a, b) }
+    } else {
+        dot_product_default(a, b)
+    }
 }
 ```
 
@@ -142,9 +177,9 @@ This is standard practice in performance-critical libraries (glibc `memcpy`, Ope
 
 The compiler may reorder memory accesses or eliminate "redundant" loads/stores. When you need to prevent this (e.g., for lock-free data structures or interacting with hardware):
 
-```c
-asm volatile("" ::: "memory");  // Full compiler barrier
-__atomic_signal_fence(__ATOMIC_SEQ_CST);  // Same effect, more portable
+```rust
+// Full compiler barrier (prevents reordering, no CPU instructions emitted):
+std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 ```
 
 This doesn't emit any instruction — it tells the compiler that memory may have been modified, so all cached values in registers must be reloaded and all pending writes must be flushed. Not needed for normal code; essential for lock-free programming.

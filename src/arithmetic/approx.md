@@ -35,35 +35,36 @@ This finds the degree-4 polynomial with `float` coefficients that best approxima
 
 ## Exp Approximation
 
-```c
+```rust
 // exp(x) for x in [-0.5, 0.5], about 18 bits accurate
-float exp_poly4(float x) {
-    const float c0 = 0.9999999f;
-    const float c1 = 0.9999999f;
-    const float c2 = 0.4999999f;
-    const float c3 = 0.1666667f;
-    const float c4 = 0.04166667f;
+fn exp_poly4(x: f32) -> f32 {
+    let c0: f32 = 0.9999999;
+    let c1: f32 = 0.9999999;
+    let c2: f32 = 0.4999999;
+    let c3: f32 = 0.1666667;
+    let c4: f32 = 0.04166667;
     
-    float x2 = x * x;
-    float x4 = x2 * x2;
+    let x2 = x * x;
+    let x4 = x2 * x2;
     // Estrin's scheme for ILP:
-    return c0 + c1*x + c2*x2 + c3*x2*x + c4*x4;
+    c0 + c1*x + c2*x2 + c3*x2*x + c4*x4
 }
 ```
 
 For arbitrary `x`, reduce to [−0.5, 0.5] with:
-```c
-float expf_fast(float x) {
+```rust
+fn expf_fast(x: f32) -> f32 {
     // Range reduction: x = k*ln(2) + r, |r| <= ln(2)/2
-    const float inv_ln2 = 1.44269504f;  // 1/ln(2)
-    const float ln2 = 0.69314718f;
+    let inv_ln2: f32 = 1.44269504;  // 1/ln(2)
+    let ln2: f32 = 0.69314718;
     
-    float kf = roundf(x * inv_ln2);  // k = nearest integer to x/ln(2)
-    int k = (int)kf;
-    float r = x - kf * ln2;  // r in [-ln2/2, ln2/2]
+    let kf = (x * inv_ln2).round();  // k = nearest integer to x/ln(2)
+    let k = kf as i32;
+    let r = x - kf * ln2;  // r in [-ln2/2, ln2/2]
     
-    float exp_r = exp_poly4(r);  // Approximate exp(r)
-    return ldexpf(exp_r, k);      // Multiply by 2^k (integer exponent manipulation)
+    let exp_r = exp_poly4(r);  // Approximate exp(r)
+    // Multiply by 2^k via integer exponent manipulation
+    f32::from_bits(((exp_r.to_bits() as i32) + (k << 23)) as u32)
 }
 ```
 
@@ -71,32 +72,34 @@ The `ldexpf` call manipulates the float's exponent bits directly — it's just i
 
 ## Log Approximation
 
-```c
+```rust
 // log(1+x) for x in [-0.2, 0.2], about 18 bits accurate
-float log1p_poly4(float x) {
-    const float c1 = 1.0f;
-    const float c2 = -0.4999999f;
-    const float c3 = 0.3333333f;
-    const float c4 = -0.2500000f;
+fn log1p_poly4(x: f32) -> f32 {
+    let c1: f32 = 1.0;
+    let c2: f32 = -0.4999999;
+    let c3: f32 = 0.3333333;
+    let c4: f32 = -0.2500000;
     
-    float x2 = x * x;
-    float x4 = x2 * x2;
-    return x * (c1 + c2*x + c3*x2 + c4*x2*x);
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    x * (c1 + c2*x + c3*x2 + c4*x2*x)
 }
 ```
 
 Full `logf_fast`:
-```c
-float logf_fast(float x) {
+```rust
+fn logf_fast(x: f32) -> f32 {
     // Extract exponent and mantissa: x = m * 2^e, m in [1, 2)
-    int e;
-    float m = frexpf(x, &e);  // m in [0.5, 1) or [1, 2)
+    let bits = x.to_bits();
+    let e = ((bits >> 23) & 0xFF) as i32 - 127;  // Exponent
+    let m_bits = (bits & 0x7FFFFF) | 0x3F800000;  // Force exponent to 0 (m in [1, 2))
+    let m = f32::from_bits(m_bits);
     
     // Better: m in [2/3, 4/3] for faster convergence
     // ... (range reduction using sqrt(2))
     
-    float log_m = log1p_poly4(m - 1.0f);
-    return (float)e * 0.69314718f + log_m;
+    let log_m = log1p_poly4(m - 1.0);
+    (e as f32) * 0.69314718 + log_m
 }
 ```
 
@@ -104,19 +107,19 @@ float logf_fast(float x) {
 
 The range reduction is the hardest part — `sin(x)` for large `x` requires high-precision `π` and careful reduction. For [−π/2, π/2]:
 
-```c
-float sin_poly5(float x) {
-    const float c1 = 1.0f;
-    const float c3 = -0.16666667f;  // -1/3!
-    const float c5 = 0.008333333f;  //  1/5!
-    const float c7 = -0.0001984127f; // -1/7!
-    const float c9 = 2.75573e-6f;    //  1/9!
+```rust
+fn sin_poly5(x: f32) -> f32 {
+    let c1: f32 = 1.0;
+    let c3: f32 = -0.16666667;  // -1/3!
+    let c5: f32 = 0.008333333;  //  1/5!
+    let c7: f32 = -0.0001984127; // -1/7!
+    let c9: f32 = 2.75573e-6;    //  1/9!
     
-    float x2 = x * x;
-    float x4 = x2 * x2;
-    float x8 = x4 * x4;
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    let x8 = x4 * x4;
     // Horner's method for sin (odd powers only):
-    return x * (c1 + x2*(c3 + x2*(c5 + x2*(c7 + x2*c9))));
+    x * (c1 + x2*(c3 + x2*(c5 + x2*(c7 + x2*c9))))
 }
 ```
 
@@ -126,8 +129,8 @@ For `cos(x)`: use `sin_poly5(π/2 − x)` or a dedicated polynomial with even po
 
 All polynomial evaluations benefit from FMA (fused multiply-add). A Horner evaluation like `c0 + x*(c1 + x*(c2 + x*c3))` can be written:
 
-```c
-float result = fmaf(x, fmaf(x, fmaf(x, c3, c2), c1), c0);
+```rust
+let result = x.mul_add(x.mul_add(x.mul_add(c3, c2), c1), c0);
 ```
 
 Each `fmaf` does `a*b + c` with one rounding. This is both faster (3 FMA instructions vs. 3 multiplies + 3 adds) and more accurate (3 roundings instead of 6). With `-mfma`, the compiler generates FMA automatically from regular arithmetic if `-ffast-math` is enabled.
@@ -136,19 +139,19 @@ Each `fmaf` does `a*b + c` with one rounding. This is both faster (3 FMA instruc
 
 For irregular functions or when a polynomial would need high degree:
 
-```c
+```rust
 // sin(x) via 256-entry table
-const float sin_table[257];  // sin(0), sin(π/512), sin(2π/512), ..., sin(π/2)
+static SIN_TABLE: [f32; 257] = [0.0; 257];  // sin(0), sin(π/512), sin(2π/512), ..., sin(π/2)
 
-float sin_table_lookup(float x) {
+fn sin_table_lookup(x: f32) -> f32 {
     // Assumes x in [0, π/2)
-    float index_f = x * (256.0f / (M_PI/2.0f));
-    int index = (int)index_f;
-    float frac = index_f - index;
+    let index_f = x * (256.0 / std::f32::consts::FRAC_PI_2);
+    let index = index_f as usize;
+    let frac = index_f - index as f32;
     // Linear interpolation
-    float v0 = sin_table[index];
-    float v1 = sin_table[index + 1];
-    return v0 + frac * (v1 - v0);
+    let v0 = SIN_TABLE[index];
+    let v1 = SIN_TABLE[index + 1];
+    v0 + frac * (v1 - v0)
 }
 ```
 

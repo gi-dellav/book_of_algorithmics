@@ -17,10 +17,13 @@ Address decomposition (L1: 32 KB, 8-way, 64 B lines):
 
 ## The Experiment
 
-```c
-for (int stride = 1; stride <= 256; stride++) {
-    for (int i = 0; i < n; i += stride)
-        a[i]++;  // Access one element per stride
+```rust
+for stride in 1..=256 {
+    let mut i = 0;
+    while i < n {
+        a[i] += 1;  // Access one element per stride
+        i += stride;
+    }
 }
 ```
 

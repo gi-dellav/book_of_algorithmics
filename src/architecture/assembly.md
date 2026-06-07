@@ -121,12 +121,13 @@ mov rax, [rip + offset]     ; RIP-relative (used for global variables)
 
 Consider this C function:
 
-```c
-int sum(int *arr, int n) {
-    int total = 0;
-    for (int i = 0; i < n; i++)
-        total += arr[i];
-    return total;
+```rust
+unsafe fn sum(arr: *const i32, n: i32) -> i32 {
+    let mut total = 0;
+    for i in 0..n {
+        total += *arr.add(i as usize);
+    }
+    total
 }
 ```
 

@@ -10,15 +10,15 @@ The most versatile shuffle. Each byte of the destination is either:
 - Copied from any byte of the source (indexed by the corresponding byte of the control mask, 0–127/255).
 - Set to zero (if the high bit of the control byte is set).
 
-```c
-__m256i data = _mm256_loadu_si256(...);
-__m256i shuffle_mask = _mm256_setr_epi8(
+```rust
+let data = unsafe { _mm256_loadu_si256(...) };
+let shuffle_mask = unsafe { _mm256_setr_epi8(
     3, 2, 1, 0,   // Reverse first 4 bytes
     7, 6, 5, 4,   // Reverse next 4 bytes
     -1, -1, -1, -1,  // Zero these 4 bytes (high bit set)
     ...
-);
-__m256i shuffled = _mm256_shuffle_epi8(data, shuffle_mask);
+) };
+let shuffled = unsafe { _mm256_shuffle_epi8(data, shuffle_mask) };
 ```
 
 `pshufb` is the workhorse for: byte-level permutations, nibble table lookups, popcount (Wojciech Muła technique), and string operations.
@@ -27,9 +27,9 @@ __m256i shuffled = _mm256_shuffle_epi8(data, shuffle_mask);
 
 Permute 32-bit lanes within a register using a runtime index vector:
 
-```c
-__m256i indices = _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0);  // Reverse order
-__m256 reversed = _mm256_permutevar8x32_ps(data, indices);
+```rust
+let indices = unsafe { _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0) };  // Reverse order
+let reversed = unsafe { _mm256_permutevar8x32_ps(data, indices) };
 ```
 
 Unlike shuffle, the control comes from a register, not an immediate. This enables dynamic permutations — useful for sorting networks and filter/compact operations.
@@ -38,8 +38,8 @@ Unlike shuffle, the control comes from a register, not an immediate. This enable
 
 Permute 128-bit lanes between two registers:
 
-```c
-__m256 result = _mm256_permute2f128_ps(a, b, 0x21);
+```rust
+let result = unsafe { _mm256_permute2f128_ps::<0x21>(a, b) };
 // 0x21 = 00 10 00 01: low 128 = a[1], high 128 = b[0]
 ```
 
@@ -49,21 +49,21 @@ Useful for matrix transpose and interleaving data from two streams.
 
 Count the number of set bits in each byte of a register using `pshufb` as a 16-entry lookup table (Wojciech Muła, 2011):
 
-```c
-__m256i popcount_epi8(__m256i v) {
+```rust
+unsafe fn popcount_epi8(v: __m256i) -> __m256i {
     // Lookup table: popcount for each nibble (0-15)
-    const __m256i lookup = _mm256_setr_epi8(
+    let lookup = _mm256_setr_epi8(
         0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
     );
     
-    __m256i low_nibble = _mm256_and_si256(v, _mm256_set1_epi8(0x0F));
-    __m256i high_nibble = _mm256_and_si256(_mm256_srli_epi16(v, 4), _mm256_set1_epi8(0x0F));
+    let low_nibble = _mm256_and_si256(v, _mm256_set1_epi8(0x0F));
+    let high_nibble = _mm256_and_si256(_mm256_srli_epi16::<4>(v), _mm256_set1_epi8(0x0F));
     
-    __m256i pop_low = _mm256_shuffle_epi8(lookup, low_nibble);
-    __m256i pop_high = _mm256_shuffle_epi8(lookup, high_nibble);
+    let pop_low = _mm256_shuffle_epi8(lookup, low_nibble);
+    let pop_high = _mm256_shuffle_epi8(lookup, high_nibble);
     
-    return _mm256_add_epi8(pop_low, pop_high);
+    _mm256_add_epi8(pop_low, pop_high)
 }
 ```
 
@@ -75,17 +75,17 @@ This popcount is ~2× faster than the hardware `popcnt` instruction when countin
 
 Given a vector of values and a mask, extract only the values where the mask is true into a contiguous output:
 
-```c
+```rust
 // Input:  values = [a, b, c, d, e, f, g, h]
 //         mask   = [1, 0, 1, 1, 0, 1, 0, 0]
 // Output: [a, c, d, f, ?, ?, ?, ?]
 
 // Precomputed permutation table: for each 8-bit mask, a permutation that compacts matching elements
-const uint8_t permutation[256][8];  // Precomputed
+static PERMUTATION: [[u8; 8]; 256] = /* Precomputed */;
 
-int mask_bits = _mm256_movemask_ps(mask);  // 8-bit mask
-__m256i perm = _mm256_loadu_si256((__m256i*)permutation[mask_bits]);
-__m256 compacted = _mm256_permutevar8x32_ps(values, perm);
+let mask_bits = unsafe { _mm256_movemask_ps(mask) };  // 8-bit mask
+let perm = unsafe { _mm256_loadu_si256(PERMUTATION[mask_bits as usize].as_ptr() as *const __m256i) };
+let compacted = unsafe { _mm256_permutevar8x32_ps(values, perm) };
 ```
 
 The permutation table maps each possible 8-bit mask to a permutation vector. For mask `0b01011001` (bits 0, 3, 4, 6 set), the permutation is `[0, 3, 4, 6, ?, ?, ?, ?]` (the first four lanes are the set bit positions; the rest are don't-care).

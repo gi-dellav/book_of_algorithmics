@@ -17,26 +17,18 @@ The loop should be fast. If it takes 5 minutes to run a benchmark, you'll run it
 
 ## Setting Up a Benchmark
 
-A minimal C++ benchmark (using Google Benchmark style):
+A minimal Rust benchmark (using Criterion style):
 
-```cpp
-#include <chrono>
-#include <vector>
+```rust
+use std::hint::black_box;
 
-static void BM_sum_array(benchmark::State &state) {
-    const int n = state.range(0);
-    std::vector<int> arr(n, 1);
-    
-    for (auto _ : state) {
-        int sum = 0;
-        for (int i = 0; i < n; i++)
-            sum += arr[i];
-        benchmark::DoNotOptimize(sum);  // Prevent elimination
+fn bm_sum_array(arr: &[i32]) {
+    let mut sum = 0;
+    for &val in arr {
+        sum += val;
     }
-    
-    state.SetItemsProcessed(state.iterations() * n);
+    black_box(sum);  // Prevent elimination
 }
-BENCHMARK(BM_sum_array)->Range(1<<10, 1<<20);
 ```
 
 Key elements:
@@ -47,7 +39,7 @@ Key elements:
 
 ## Splitting Implementation from Benchmark
 
-Put the code under test in a separate `.cpp` file from the benchmark harness. Compile each with `-O2` but link them *without LTO* (or use `__attribute__((noinline))`). This prevents the compiler from optimizing across the boundary and eliminating the code you're trying to measure.
+Put the code under test in a separate `.rs` file from the benchmark harness. Compile each with `-O2` but link them *without LTO* (or use `#[inline(never)]`). This prevents the compiler from optimizing across the boundary and eliminating the code you're trying to measure.
 
 ```makefile
 # Benchmark Makefile

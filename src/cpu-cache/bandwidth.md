@@ -6,9 +6,10 @@ Bandwidth is the rate at which data flows between cache levels. While latency li
 
 Read (or write) an array of N integers sequentially, measuring throughput:
 
-```c
-for (int i = 0; i < n; i++)
+```rust
+for i in 0..n {
     sum += a[i];  // Read-only bandwidth
+}
 ```
 
 Vary N from 2 KB to 256 MB, measure throughput in GB/s:
@@ -38,10 +39,18 @@ Not all accesses consume the same bandwidth:
 
 **Non-temporal stores** (`_mm256_stream_si256`) bypass the cache for writes, eliminating the read-for-ownership at L1/L2/L3. They're useful when writing large buffers that won't be read again soon. For RAM-to-RAM copies, non-temporal stores can achieve near-peak RAM bandwidth.
 
-```c
-for (int i = 0; i < n; i += 8) {
-    __m256i data = _mm256_load_si256((__m256i*)(src + i));
-    _mm256_stream_si256((__m256i*)(dst + i), data);  // Non-temporal store
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{_mm256_load_si256, _mm256_stream_si256};
+
+let mut i = 0;
+while i < n {
+    // SAFETY: src and dst are valid for i through i+7
+    unsafe {
+        let data = _mm256_load_si256(src.add(i) as *const __m256i);
+        _mm256_stream_si256(dst.add(i) as *mut __m256i, data);  // Non-temporal store
+    }
+    i += 8;
 }
 ```
 

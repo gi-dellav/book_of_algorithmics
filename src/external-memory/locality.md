@@ -7,16 +7,19 @@ Locality is the property that makes caches work. A program exhibits **temporal l
 Spatial locality is about using the *entire* cache line. A cache line is 64 bytes on x86 — 16 ints, 8 doubles, or 64 chars. When you load one element, you get its 15 neighbors for free (they're in the same cache line). The next 15 accesses to those neighbors cost zero additional I/O.
 
 **Good spatial locality**:
-```c
-for (int i = 0; i < n; i++)
+```rust
+for i in 0..n {
     sum += a[i];  // Sequential → every element after the first is a cache hit
+}
 ```
 
 **Poor spatial locality**:
-```c
-for (int j = 0; j < n; j++)
-    for (int i = 0; i < n; i++)
+```rust
+for j in 0..n {
+    for i in 0..n {
         sum += a[i * stride];  // Strided → each access may be to a different cache line
+    }
+}
 ```
 
 When `stride = n` (column access in a row-major matrix), every access is to a different cache line. At stride = 64 bytes (exactly one cache line), every access is a cache miss — worst-case spatial locality.
@@ -26,17 +29,21 @@ When `stride = n` (column access in a row-major matrix), every access is to a di
 Temporal locality is about reusing data before it's evicted from cache.
 
 **Good temporal locality**:
-```c
-for (int k = 0; k < n; k++)      // K is the inner loop
-    for (int i = 0; i < n; i++)
+```rust
+for k in 0..n {      // K is the inner loop
+    for i in 0..n {
         C[i][j] += A[i][k] * B[k][j];  // B[k][j] is reused n times (temporal in k loop)
+    }
+}
 ```
 
 **Poor temporal locality**:
-```c
-for (int i = 0; i < n; i++)      // I is the outer loop
-    for (int j = 0; j < n; j++)
+```rust
+for i in 0..n {      // I is the outer loop
+    for j in 0..n {
         C[i][j] += A[i][k] * B[k][j];  // Each element accessed once, never reused in cache
+    }
+}
 ```
 
 The second version streams through data but doesn't reuse anything. If the working set exceeds cache size, every access in the inner loop is a miss.
@@ -45,10 +52,10 @@ The second version streams through data but doesn't reuse anything. If the worki
 
 ### Depth-First Merge Sort
 
-```c
-void mergesort(int *a, int *buf, int lo, int hi) {
-    if (hi - lo <= 1) return;
-    int mid = (lo + hi) / 2;
+```rust
+fn mergesort(a: &mut [i32], buf: &mut [i32], lo: usize, hi: usize) {
+    if hi - lo <= 1 { return; }
+    let mid = (lo + hi) / 2;
     mergesort(a, buf, lo, mid);
     mergesort(a, buf, mid, hi);
     merge(a, buf, lo, mid, hi);
@@ -67,10 +74,12 @@ The crossover between depth-first and breadth-first depends on the ratio of arra
 
 The standard DP for 0/1 knapsack:
 
-```c
-for (int i = 1; i <= n; i++)
-    for (int w = 0; w <= W; w++)
-        dp[i][w] = max(dp[i-1][w], dp[i-1][w - weight[i]] + value[i]);
+```rust
+for i in 1..=n {
+    for w in 0..=W {
+        dp[i][w] = dp[i-1][w].max(dp[i-1][w - weight[i]] + value[i]);
+    }
+}
 ```
 
 Row `i` depends only on row `i-1`. Only two rows need to be in cache simultaneously — excellent temporal locality. The inner loop is sequential in `w` — excellent spatial locality. This is why DP fits in cache easily despite the O(nW) theoretical complexity.
@@ -93,13 +102,13 @@ The right layout depends on whether build time or query time dominates. The gene
 
 ## AoS vs. SoA (Row vs. Columnar Layout)
 
-```c
+```rust
 // Array of Structures (AoS)
-struct Point { float x, y, z; };
-Point points[N];
+struct Point { x: f32, y: f32, z: f32 }
+let points: [Point; N];
 
 // Structure of Arrays (SoA)
-struct Points { float x[N], y[N], z[N]; };
+struct Points { x: [f32; N], y: [f32; N], z: [f32; N] }
 ```
 
 If you're iterating over all points and accessing all three coordinates, both layouts are fine (both stream sequentially). But if you're computing `magnitude = sqrt(x² + y² + z²)`, AoS loads x, y, z from one cache line (good — all needed data is together). If you're computing `sum(x)`, SoA streams through x values without loading y and z (good — no wasted bandwidth).

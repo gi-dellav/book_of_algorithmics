@@ -6,7 +6,7 @@ A **field** is a set with addition, subtraction, multiplication, and division (b
 
 The integers modulo a prime p form a field. Addition, subtraction, and multiplication are done modulo p. Division is multiplication by the modular inverse (computed via extended Euclid or Fermat).
 
-```c
+```rust
 // Arithmetic in GF(7):
 // 3 + 5 = 8 ≡ 1 (mod 7)
 // 3 - 5 = -2 ≡ 5 (mod 7)
@@ -41,31 +41,32 @@ a × b = (x^7 + x^5 + x^3 + x + 1)(x^4 + x^2 + 1)
 
 For small fields (k ≤ 16), precompute logarithm and exponentiation tables:
 
-```c
+```rust
 // GF(2^8) multiplication via log tables
-uint8_t gf256_log[256];  // log_g(x) for x ≠ 0
-uint8_t gf256_exp[512];  // g^i for i in [0, 510]
+static mut GF256_LOG: [u8; 256] = [0u8; 256];  // log_g(x) for x ≠ 0
+static mut GF256_EXP: [u8; 512] = [0u8; 512];  // g^i for i in [0, 510]
 
-void gf256_init() {
+fn gf256_init() {
     // Find a primitive element (generator) g
-    uint8_t g = 3;  // In GF(2^8) with AES polynomial, 3 is primitive
-    uint8_t val = 1;
-    for (int i = 0; i < 255; i++) {
-        gf256_exp[i] = val;
-        gf256_log[val] = i;
+    let g: u8 = 3;  // In GF(2^8) with AES polynomial, 3 is primitive
+    let mut val: u8 = 1;
+    for i in 0..255 {
+        unsafe { GF256_EXP[i] = val; }
+        unsafe { GF256_LOG[val as usize] = i as u8; }
         val = gf256_mul_basic(val, g);  // Multiply by generator
     }
-    for (int i = 255; i < 510; i++)
-        gf256_exp[i] = gf256_exp[i - 255];  // Wrap for convenience
+    for i in 255..510 {
+        unsafe { GF256_EXP[i] = GF256_EXP[i - 255]; }  // Wrap for convenience
+    }
 }
 
-uint8_t gf256_mul(uint8_t a, uint8_t b) {
-    if (a == 0 || b == 0) return 0;
-    return gf256_exp[gf256_log[a] + gf256_log[b]];
+fn gf256_mul(a: u8, b: u8) -> u8 {
+    if a == 0 || b == 0 { return 0; }
+    unsafe { GF256_EXP[GF256_LOG[a as usize] as usize + GF256_LOG[b as usize] as usize] }
 }
 
-uint8_t gf256_inv(uint8_t a) {
-    return gf256_exp[255 - gf256_log[a]];  // a^(-1) = g^(255 - log(a))
+fn gf256_inv(a: u8) -> u8 {
+    unsafe { GF256_EXP[255 - GF256_LOG[a as usize] as usize] }  // a^(-1) = g^(255 - log(a))
 }
 ```
 
@@ -75,10 +76,12 @@ Multiplication in 3 table lookups + 1 add — faster than the polynomial multipl
 
 Modern x86 CPUs have instructions for carry-less multiplication:
 
-```c
+```rust
 // GF(2^k) multiplication using CLMUL (carry-less multiply)
-__m128i gf_mul(__m128i a, __m128i b) {
-    return _mm_clmulepi64_si128(a, b, 0x00);  // Multiply low 64 bits
+use std::arch::x86_64::*;
+
+unsafe fn gf_mul(a: __m128i, b: __m128i) -> __m128i {
+    _mm_clmulepi64_si128(a, b, 0x00)  // Multiply low 64 bits
 }
 ```
 

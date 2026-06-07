@@ -4,10 +4,11 @@ Event-driven concurrency is the oldest concurrency model still in wide use. Inst
 
 ## The Event Loop
 
-```c
-while (running) {
-    event = get_next_event();  // From epoll, kqueue, or a queue
-    handler = find_handler(event.type);
+```rust
+// Event loop (conceptual)
+while running {
+    let event = get_next_event();  // From epoll, kqueue, or a queue
+    let handler = find_handler(event.event_type);
     handler(event);
 }
 ```
@@ -59,22 +60,29 @@ Microtasks run before the next macrotask, even if the macrotask was scheduled fi
 
 On Linux, the event loop uses `epoll` to monitor thousands of file descriptors:
 
-```c
-int epoll_fd = epoll_create1(0);
-struct epoll_event ev;
-ev.events = EPOLLIN;  // Readable
-ev.data.fd = socket_fd;
-epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_fd, &ev);
+```rust
+use std::os::fd::RawFd;
 
-struct epoll_event events[MAX_EVENTS];
-while (running) {
-    int n = epoll_wait(epoll_fd, events, MAX_EVENTS, timeout_ms);
-    for (int i = 0; i < n; i++) {
-        if (events[i].events & EPOLLIN) {
-            handle_read(events[i].data.fd);
-        }
-        if (events[i].events & EPOLLOUT) {
-            handle_write(events[i].data.fd);
+// epoll event loop (using libc bindings)
+unsafe {
+    let epoll_fd = libc::epoll_create1(0);
+    let mut ev = libc::epoll_event {
+        events: libc::EPOLLIN as u32,  // Readable
+        u64: socket_fd as u64,
+    };
+    libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, socket_fd, &mut ev);
+
+    let mut events: [libc::epoll_event; MAX_EVENTS] = std::mem::zeroed();
+    while running {
+        let n = libc::epoll_wait(epoll_fd, events.as_mut_ptr(), MAX_EVENTS as i32, timeout_ms);
+        for i in 0..n {
+            let fd = events[i as usize].u64 as RawFd;
+            if events[i as usize].events & libc::EPOLLIN as u32 != 0 {
+                handle_read(fd);
+            }
+            if events[i as usize].events & libc::EPOLLOUT as u32 != 0 {
+                handle_write(fd);
+            }
         }
     }
 }

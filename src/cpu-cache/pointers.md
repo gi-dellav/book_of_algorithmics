@@ -4,13 +4,13 @@ Pointers are expensive. A 64-bit pointer occupies 8 bytes of storage, and derefe
 
 ## Pointers vs. Indices
 
-```c
+```rust
 // Using pointers
-struct Node { int value; Node *next; };  // 16 bytes per node
+struct Node { value: i32, next: *const Node }  // 16 bytes per node
 
 // Using indices
-struct Node { int value; int next_idx; };  // 8 bytes per node
-Node nodes[MAX_NODES];
+struct Node { value: i32, next_idx: i32 }  // 8 bytes per node
+// let mut nodes: Vec<Node> = Vec::with_capacity(MAX_NODES);
 ```
 
 The index version:
@@ -35,12 +35,22 @@ Drawback: limited address space (4 GB), not compatible with standard libraries b
 
 For truly memory-constrained applications, pack a 24-bit index and an 8-bit flag into one 32-bit word:
 
-```c
+```rust
 struct PackedNode {
-    int value;
-    uint32_t next_idx : 24;  // 24 bits → 16 million nodes
-    uint32_t flag    : 8;    // 8 bits → 256 flag values
-};
+    value: i32,
+    packed: u32,  // next_idx in low 24 bits, flag in high 8 bits
+}
+
+impl PackedNode {
+    fn next_idx(&self) -> u32 { self.packed & 0x00FF_FFFF }
+    fn flag(&self) -> u8 { (self.packed >> 24) as u8 }
+    fn set_next_idx(&mut self, idx: u32) {
+        self.packed = (self.packed & 0xFF00_0000) | (idx & 0x00FF_FFFF);
+    }
+    fn set_flag(&mut self, flag: u8) {
+        self.packed = (self.packed & 0x00FF_FFFF) | ((flag as u32) << 24);
+    }
+}
 ```
 
 The compiler generates bitfield extract/insert instructions (`bextr`, `bzhi` on BMI2). Extraction is 1 cycle; packing requires a read-modify-write of the 32-bit word. Use when the 2× memory reduction justifies the extra instruction.
@@ -49,19 +59,19 @@ The compiler generates bitfield extract/insert instructions (`bextr`, `bzhi` on 
 
 Steal bits from pointers to store metadata. Since x86-64 uses only the low 48 bits of a 64-bit pointer (the high 16 bits must be sign-extensions of bit 47), you can use the high 16 bits for tags:
 
-```c
-uintptr_t tagged = (uintptr_t)ptr | (tag << 48);
+```rust
+let tagged = (ptr as usize) | (tag << 48);
 // Later:
-void *ptr = (void *)((intptr_t)(tagged << 16) >> 16);  // Sign-extend from bit 47
-int tag = tagged >> 48;
+let ptr = ((tagged << 16) as isize >> 16) as *mut std::ffi::c_void;  // Sign-extend from bit 47
+let tag = tagged >> 48;
 ```
 
 Or use the low 3 bits (always zero for 8-byte-aligned pointers):
-```c
-uintptr_t tagged = (uintptr_t)ptr | type_tag;  // type_tag in {0, 1, ..., 7}
+```rust
+let tagged = (ptr as usize) | type_tag;  // type_tag in {0, 1, ..., 7}
 // Later:
-void *ptr = (void *)(tagged & ~7);
-int tag = tagged & 7;
+let ptr = (tagged & !7) as *mut std::ffi::c_void;
+let tag = tagged & 7;
 ```
 
 Pointer tagging is used in JavaScript engines (V8: tagged pointers for small integers/SMI, doubles, objects), Objective-C runtime ("tagged pointers" for small objects like NSNumber), and Linux kernel (`rb_root` uses low bits of root pointer for color).
@@ -70,11 +80,18 @@ Pointer tagging is used in JavaScript engines (V8: tagged pointers for small int
 
 Store the offset between the pointer and the pointed-to object, rather than the absolute address:
 
-```c
+```rust
 struct RelNode {
-    int value;
-    int32_t next_offset;  // Offset from this node to the next
-};
+    value: i32,
+    next_offset: i32,  // Offset from this node to the next
+}
+
+impl RelNode {
+    fn next(&self) -> *const RelNode {
+        // SAFETY: caller must ensure the computed pointer is valid
+        unsafe { (self as *const Self as *const u8).offset(self.next_offset as isize) as *const RelNode }
+    }
+}
 ```
 
 Then `next = (RelNode *)((char *)this + next_offset)`. Relative pointers enable position-independent data structures — they can be `mmap`'d at any address and work without relocation. Used in shared memory IPC, persistent data structures, and some file formats (FlatBuffers, Cap'n Proto).
@@ -85,13 +102,13 @@ The offset is typically 32 bits (4 GB range), sufficient for most in-memory data
 
 A skip list can use array indices instead of pointers:
 
-```c
+```rust
 struct SkipNode {
-    int key;
-    int value;
-    int next[SKIP_LEVELS];  // Indices (int) instead of pointers (SkipNode *)
-};
-SkipNode pool[MAX_NODES];
+    key: i32,
+    value: i32,
+    next: [i32; SKIP_LEVELS],  // Indices (i32) instead of pointers
+}
+// let mut pool: Vec<SkipNode> = Vec::with_capacity(MAX_NODES);
 ```
 
 The memory savings (4 bytes vs. 8 bytes per forward pointer, per level) accumulate quickly. For a skip list with 16 levels and 1 million nodes:

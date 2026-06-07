@@ -45,11 +45,12 @@ But SIMD code can stress the decode limit. AVX instructions are longer (often 5�
 
 ## Unequal Branches and `cmov`
 
-```c
-if (condition)
+```rust
+if condition {
     x = expensive_computation();
-else
+} else {
     x = 0;
+}
 ```
 
 If the condition is predictable, this is fine. If it's unpredictable, the branch mispredicts half the time, paying ~20 cycles each time.
@@ -70,12 +71,16 @@ The compiler's heuristic: use `cmov` when both sides are cheap (a few cycles). O
 
 C++20 attributes that hint the branch direction to the compiler:
 
-```cpp
-if (__builtin_expect(x == 0, 0))  // C-style (GCC)
+```rust
+// C-style (GCC __builtin_expect) — Rust nightly equivalent:
+if core::intrinsics::unlikely(x == 0) {
     handle_rare_case();
+}
 
-if (x == 0) [[unlikely]]          // C++20
+// C++20 [[unlikely]] — same mechanism in Rust:
+if core::intrinsics::unlikely(x == 0) {
     handle_rare_case();
+}
 ```
 
 These attributes affect two things:

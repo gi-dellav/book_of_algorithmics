@@ -8,11 +8,13 @@ Today, even a mid-range laptop has 8 cores. A server has 64. A GPU has 10,000. P
 
 A sequential program has one execution path. A parallel program with n threads has an exponential number of possible interleavings. Two threads incrementing the same counter:
 
-```c
-// Thread A          // Thread B
-int t = counter;      int t = counter;
-t = t + 1;            t = t + 1;
-counter = t;          counter = t;
+```rust
+// Thread A                    // Thread B
+unsafe {
+    let mut t = *counter;           let mut t = *counter;
+    t += 1;                         t += 1;
+    *counter = t;                   *counter = t;
+}
 ```
 
 If both threads read `counter` before either writes, the counter increases by 1 instead of 2. This is a **race condition**: the result depends on the non-deterministic interleaving of operations. Finding race conditions is hard; reproducing them is harder. They may only manifest under specific cache coherence states, with specific thread interleavings, on specific hardware.

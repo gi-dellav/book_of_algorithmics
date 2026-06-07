@@ -59,10 +59,11 @@ The OS may schedule another thread on your core, evict your caches and TLB entri
 
 The compiler may eliminate the code you're trying to measure because it can prove the result is unused.
 
-```c
-int sum = 0;
-for (int i = 0; i < n; i++)
+```rust
+let mut sum = 0;
+for i in 0..n {
     sum += a[i];
+}
 // If 'sum' is never used, the compiler may delete the entire loop!
 ```
 
@@ -89,15 +90,17 @@ Two runs of the same benchmark on the same machine with the same binary will dif
 The difference matters because pipelining and parallelism may give high throughput with high latency, or low latency with low throughput. A CPU can issue one floating-point division every 13 cycles (throughput), but each division takes 13 cycles (latency). They're the same for division because it's not pipelined. For multiplication, throughput is 0.5 cycles but latency is 3 cycles.
 
 To measure latency, introduce a data dependency that prevents the CPU from overlapping operations:
-```c
-for (int i = 0; i < n; i++)
+```rust
+for i in 0..n {
     x = compute(x, a[i]);  // x depends on previous iteration
+}
 ```
 
 To measure throughput, ensure independence:
-```c
-for (int i = 0; i < n; i++)
+```rust
+for i in 0..n {
     results[i] = compute(a[i], b[i]);  // Each iteration is independent
+}
 ```
 
 ## A Benchmarking Checklist

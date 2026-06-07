@@ -23,12 +23,13 @@ Hardware prefetching explains why sequential access achieves high bandwidth: the
 
 ## Software Prefetching
 
-```c
-#include <x86intrin.h>
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 
-for (int i = 0; i < n; i++) {
+for i in 0..n {
     // Prefetch data needed 16 iterations ahead
-    _mm_prefetch(&a[i + 16], _MM_HINT_T0);  // Prefetch into L1
+    unsafe { _mm_prefetch(&a[i + 16] as *const _ as *const i8, _MM_HINT_T0) };  // Prefetch into L1
     process(a[i]);
 }
 ```
@@ -45,12 +46,17 @@ Software prefetching is a **hint** — the CPU may ignore it (if the address is 
 
 How far ahead should you prefetch? Too close → the data hasn't arrived by the time you need it. Too far → the data evicts something else before you use it, or arrives and is evicted before use.
 
-```c
-for (int D = 1; D <= 64; D *= 2) {
-    for (int i = 0; i < n - D; i++) {
-        _mm_prefetch(&a[i + D], _MM_HINT_T0);
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+
+let mut d = 1;
+while d <= 64 {
+    for i in 0..(n - d) {
+        unsafe { _mm_prefetch(&a[i + d] as *const _ as *const i8, _MM_HINT_T0) };
         sum += a[i];
     }
+    d *= 2;
 }
 ```
 
@@ -62,15 +68,21 @@ On Zen 2, optimal D for a simple accumulation loop is ~8–16 cache lines ahead.
 
 For binary search in a sorted array (or Eytzinger layout), the access pattern is a tree descent — predictable if you know the comparison results, but not sequential. The data structures chapter (`data-structures/binary-search.md`) shows how to software-prefetch both children of each node:
 
-```c
-while (lo < hi) {
-    int mid = (lo + hi) / 2;
-    _mm_prefetch(&a[(lo + mid) / 2], _MM_HINT_T0);  // Left grandchild
-    _mm_prefetch(&a[(mid + hi) / 2], _MM_HINT_T0);   // Right grandchild
-    if (target < a[mid])
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+
+while lo < hi {
+    let mid = (lo + hi) / 2;
+    unsafe {
+        _mm_prefetch(&a[(lo + mid) / 2] as *const _ as *const i8, _MM_HINT_T0);  // Left grandchild
+        _mm_prefetch(&a[(mid + hi) / 2] as *const _ as *const i8, _MM_HINT_T0);   // Right grandchild
+    }
+    if target < a[mid] {
         hi = mid;
-    else
+    } else {
         lo = mid + 1;
+    }
 }
 ```
 
@@ -80,11 +92,16 @@ By prefetching two levels ahead, the data for the next two comparisons is in cac
 
 `_MM_HINT_NTA` hints that the data is "non-temporal" — it should be evicted after use, not kept in cache. This is useful for large streaming workloads where caching the data would evict more important data.
 
-```c
-for (int i = 0; i < n; i += 8) {
-    _mm_prefetch(&src[i + 64], _MM_HINT_NTA);
-    __m256i data = _mm256_load_si256((__m256i*)&src[i]);
-    _mm256_stream_si256((__m256i*)&dst[i], data);
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{__m256i, _mm256_load_si256, _mm256_stream_si256, _mm_prefetch, _MM_HINT_NTA};
+
+for i in (0..n).step_by(8) {
+    unsafe {
+        _mm_prefetch(&src[i + 64] as *const _ as *const i8, _MM_HINT_NTA);
+        let data = _mm256_load_si256(&src[i] as *const _ as *const __m256i);
+        _mm256_stream_si256(&mut dst[i] as *mut _ as *mut __m256i, data);
+    }
 }
 ```
 

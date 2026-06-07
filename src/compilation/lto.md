@@ -42,17 +42,20 @@ The final machine code is generated during the link step, using the combined kno
 
 ### Cross-TU Inlining
 
-```c
-// file1.c
-int is_even(int x) { return x % 2 == 0; }
+```rust
+// crate1/src/lib.rs
+pub fn is_even(x: i32) -> bool { x % 2 == 0 }
 
-// file2.c
-int is_even(int x);  // Declaration only
-int sum_even(int *a, int n) {
-    int s = 0;
-    for (int i = 0; i < n; i++)
-        if (is_even(a[i])) s += a[i];
-    return s;
+// crate2/src/lib.rs
+// Without LTO: is_even call cannot be inlined across crate boundary
+// With LTO (lto = true in Cargo.toml): is_even can be inlined
+use crate1::is_even;
+fn sum_even(a: &[i32]) -> i32 {
+    let mut s = 0;
+    for i in 0..a.len() {
+        if is_even(a[i]) { s += a[i]; }
+    }
+    s
 }
 ```
 
@@ -60,15 +63,16 @@ Without LTO: `is_even` is a function call in the inner loop. With LTO: `is_even`
 
 ### Constant Propagation Across Files
 
-```c
-// config.c
-const int BLOCK_SIZE = 256;
+```rust
+// config.rs
+pub const BLOCK_SIZE: usize = 256;
 
-// main.c
-extern const int BLOCK_SIZE;
-void process() {
-    for (int i = 0; i < BLOCK_SIZE; i++)  // Without LTO: load BLOCK_SIZE from memory
-        ...                                  // With LTO: constant 256, unrolled
+// main.rs
+use config::BLOCK_SIZE;
+fn process() {
+    for i in 0..BLOCK_SIZE {  // Without LTO: load BLOCK_SIZE from memory
+        // ...                   // With LTO: constant 256, unrolled
+    }
 }
 ```
 

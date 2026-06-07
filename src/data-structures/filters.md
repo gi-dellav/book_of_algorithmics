@@ -6,31 +6,37 @@ A Bloom filter is a probabilistic set: it tells you either "definitely not in th
 
 A Bloom filter is a bit array of m bits and k independent hash functions. To insert an element: compute k hash values, set those k bits to 1. To query: compute the same k hash values. If all k bits are 1 → "possibly present." If any bit is 0 → "definitely absent."
 
-```c
+```rust
+#[repr(C)]
 struct BloomFilter {
-    uint64_t *bits;
-    int m;  // Number of bits
-    int k;  // Number of hash functions
-};
+    bits: *mut u64,
+    m: i32,
+    k: i32,
+}
 
-void bloom_add(BloomFilter *bf, uint64_t key) {
-    uint64_t h = key;
-    for (int i = 0; i < bf->k; i++) {
-        h = murmur64(h);  // Re-hash to get independent hash values
-        int idx = h % bf->m;
-        bf->bits[idx >> 6] |= 1ULL << (idx & 63);
+fn bloom_add(bf: *mut BloomFilter, key: u64) {
+    unsafe {
+        let mut h = key;
+        for _ in 0..(*bf).k {
+            h = murmur64(h);
+            let idx = (h % (*bf).m as u64) as usize;
+            *(*bf).bits.add(idx >> 6) |= 1u64 << (idx & 63);
+        }
     }
 }
 
-bool bloom_query(BloomFilter *bf, uint64_t key) {
-    uint64_t h = key;
-    for (int i = 0; i < bf->k; i++) {
-        h = murmur64(h);
-        int idx = h % bf->m;
-        if (!((bf->bits[idx >> 6] >> (idx & 63)) & 1))
-            return false;  // Definitely not present
+fn bloom_query(bf: *const BloomFilter, key: u64) -> bool {
+    unsafe {
+        let mut h = key;
+        for _ in 0..(*bf).k {
+            h = murmur64(h);
+            let idx = (h % (*bf).m as u64) as usize;
+            if ((*(*bf).bits.add(idx >> 6) >> (idx & 63)) & 1) == 0 {
+                return false;
+            }
+        }
+        true
     }
-    return true;  // Possibly present
 }
 ```
 
@@ -64,13 +70,15 @@ idx_i = (h₁ + i · h₂) mod m   for i = 0, 1, ..., k-1
 
 This is provably as good as k independent hash functions for Bloom filters (Kirsch & Mitzenmacher, 2006). Performance: 2 hash computations instead of k. For k = 7: ~3.5× faster.
 
-```c
-void bloom_add_double_hash(BloomFilter *bf, uint64_t key) {
-    uint64_t h1 = hash1(key);
-    uint64_t h2 = hash2(key) | 1;  // Ensure h2 is never 0 (so indices cycle through all m)
-    for (int i = 0; i < bf->k; i++) {
-        int idx = (h1 + i * h2) % bf->m;
-        bf->bits[idx >> 6] |= 1ULL << (idx & 63);
+```rust
+fn bloom_add_double_hash(bf: *mut BloomFilter, key: u64) {
+    unsafe {
+        let h1 = hash1(key);
+        let h2 = hash2(key) | 1;
+        for i in 0..(*bf).k {
+            let idx = ((h1 + (i as u64) * h2) % (*bf).m as u64) as usize;
+            *(*bf).bits.add(idx >> 6) |= 1u64 << (idx & 63);
+        }
     }
 }
 ```
@@ -79,21 +87,27 @@ void bloom_add_double_hash(BloomFilter *bf, uint64_t key) {
 
 A standard Bloom filter scatters k bits randomly across m bits. Each query causes k random memory accesses — cache misses if the filter is larger than L3. A **blocked Bloom filter** divides the filter into blocks of one cache line (512 bits = 64 bytes) and ensures all k bits for a single element fall within the *same* block.
 
-```c
-struct BlockedBloom {
-    uint64_t blocks[MAX_BLOCKS][8];  // Each block: 8 × 64 bits = 512 bits = 1 cache line
-    int num_blocks;
-    int k;  // Number of bits per element (must fit within 512)
-};
+```rust
+const MAX_BLOCKS: usize = 1000000;
 
-void blocked_bloom_add(BlockedBloom *bf, uint64_t key) {
-    uint64_t h = hash(key);
-    int block_idx = h % bf->num_blocks;  // Which block
-    uint64_t block_hash = hash2(key);
-    
-    for (int i = 0; i < bf->k; i++) {
-        int bit = (block_hash + i * PRIME) % 512;
-        bf->blocks[block_idx][bit >> 6] |= 1ULL << (bit & 63);
+struct BlockedBloom {
+    // blocks: [[u64; 8]; MAX_BLOCKS], each block = 8 × 64 bits = 512 bits = 1 cache line
+    blocks: [u64; MAX_BLOCKS * 8],
+    num_blocks: usize,
+    k: usize,
+}
+
+fn blocked_bloom_add(bf: *mut BlockedBloom, key: u64) {
+    unsafe {
+        let h = hash(key);
+        let block_idx = (h % (*bf).num_blocks as u64) as usize;
+        let block_hash = hash2(key);
+
+        for i in 0..(*bf).k {
+            let bit = ((block_hash + (i as u64) * PRIME) % 512) as usize;
+            let offset = block_idx * 8 + (bit >> 6);
+            (*bf).blocks[offset] |= 1u64 << (bit & 63);
+        }
     }
 }
 ```
@@ -106,35 +120,40 @@ Each query touches exactly one cache line. For filters larger than L3, the block
 
 A cuckoo filter stores **fingerprints** (short hashes) of elements in a hash table with cuckoo hashing: each element has two candidate buckets, h₁(key) and h₂(key) = h₁(key) ⊕ hash(fingerprint). To insert: try both buckets; if both are full, evict a random existing element and re-insert it in its alternate bucket. This may cascade, but the expected number of displacements is O(1) for load factors below 50%.
 
-```c
+```rust
+#[repr(C)]
 struct CuckooFilter {
-    uint8_t *buckets;        // Each bucket holds 4 fingerprints
-    int bucket_size;         // 4 entries per bucket
-    int num_buckets;
-    int fingerprint_bits;    // 8-16 bits per fingerprint
-};
+    buckets: *mut u8,
+    bucket_size: i32,      // 4 entries per bucket
+    num_buckets: i32,
+    fingerprint_bits: i32, // 8-16 bits per fingerprint
+}
 
-void cuckoo_insert(CuckooFilter *cf, uint64_t key) {
-    uint8_t fp = fingerprint(key, cf->fingerprint_bits);
-    uint32_t h1 = hash(key) % cf->num_buckets;
-    uint32_t h2 = h1 ^ hash_fp(fp);
-    
-    // Try to insert in bucket h1 or h2
-    if (bucket_insert(cf, h1, fp)) return;
-    if (bucket_insert(cf, h2, fp)) return;
-    
-    // Both full: evict and re-insert
-    uint32_t bucket = (rand() & 1) ? h2 : h1;
-    for (int i = 0; i < MAX_DISPLACEMENTS; i++) {
-        int slot = rand() % cf->bucket_size;
-        uint8_t evicted = cf->buckets[bucket * cf->bucket_size + slot];
-        cf->buckets[bucket * cf->bucket_size + slot] = fp;
-        fp = evicted;
-        bucket = bucket ^ hash_fp(fp);  // Alternate bucket for evicted fingerprint
-        
-        if (bucket_insert(cf, bucket, fp)) return;
+fn cuckoo_insert(cf: *mut CuckooFilter, key: u64) {
+    unsafe {
+        let fp = fingerprint(key, (*cf).fingerprint_bits);
+        let h1 = (hash(key) % (*cf).num_buckets as u64) as u32;
+        let h2 = h1 ^ hash_fp(fp);
+
+        // Try to insert in bucket h1 or h2
+        if bucket_insert(cf, h1 as i32, fp) != 0 { return; }
+        if bucket_insert(cf, h2 as i32, fp) != 0 { return; }
+
+        // Both full: evict and re-insert
+        let mut bucket = if (rand() & 1) != 0 { h2 } else { h1 };
+        let mut displaced_fp = fp;
+        for _ in 0..MAX_DISPLACEMENTS {
+            let slot = (rand() % (*cf).bucket_size as u32) as usize;
+            let offset = bucket as usize * (*cf).bucket_size as usize + slot;
+            let evicted = *(*cf).buckets.add(offset);
+            *(*cf).buckets.add(offset) = displaced_fp;
+            displaced_fp = evicted;
+            bucket = bucket ^ hash_fp(displaced_fp);
+
+            if bucket_insert(cf, bucket as i32, displaced_fp) != 0 { return; }
+        }
+        // Failed: resize and retry
     }
-    // Failed: resize and retry
 }
 ```
 

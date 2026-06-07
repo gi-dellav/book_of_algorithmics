@@ -6,36 +6,33 @@ Threads are the default concurrency primitive in most programming languages. Unl
 
 The lowest-level thread API on Linux:
 
-```c
-#include <pthread.h>
-#include <stdio.h>
+```rust
+use std::thread;
 
-#define N 1000000
-int a[N];  // Shared array
+const N: usize = 1000000;
+static mut A: [i32; N] = [0; N];  // Shared array
 
-void *sum_half(void *arg) {
-    int start = *(int*)arg;
-    long long sum = 0;
-    for (int i = start; i < start + N/2; i++)
-        sum += a[i];
-    return (void*)sum;
+fn sum_half(start: usize) -> i64 {
+    let mut sum: i64 = 0;
+    unsafe {
+        for i in start..start + N/2 {
+            sum += A[i] as i64;
+        }
+    }
+    sum
 }
 
-int main() {
+fn main() {
     // Initialize the array
-    for (int i = 0; i < N; i++) a[i] = i + 1;
-    
-    pthread_t t1, t2;
-    int start1 = 0, start2 = N/2;
-    
-    pthread_create(&t1, NULL, sum_half, &start1);
-    pthread_create(&t2, NULL, sum_half, &start2);
-    
-    void *sum1, *sum2;
-    pthread_join(t1, &sum1);
-    pthread_join(t2, &sum2);
-    
-    printf("Sum = %lld\n", (long long)sum1 + (long long)sum2);
+    for i in 0..N { unsafe { A[i] = (i + 1) as i32; } }
+
+    let t1 = thread::spawn(|| sum_half(0));
+    let t2 = thread::spawn(|| sum_half(N/2));
+
+    let sum1 = t1.join().unwrap();
+    let sum2 = t2.join().unwrap();
+
+    println!("Sum = {}", sum1 + sum2);
     // Expected: N*(N+1)/2 = 500000500000
 }
 ```
@@ -48,25 +45,35 @@ Thread creation: ~10 µs (vs. ~500 µs for `fork()`). The kernel allocates a sta
 
 Creating and destroying threads per task is wasteful. A **thread pool** pre-creates a fixed number of worker threads and dispatches tasks to them via a queue:
 
-```c
+```rust
+use std::sync::{Arc, Mutex, Condvar};
+use std::collections::VecDeque;
+
 // Simplified thread pool (conceptual)
 struct ThreadPool {
-    pthread_t *workers;
-    int num_workers;
-    Task *queue;           // Lock-free or mutex-protected queue
-    pthread_mutex_t lock;
-    pthread_cond_t cond;   // Signal when work is available
-};
+    workers: Vec<std::thread::JoinHandle<()>>,
+    queue: Arc<(Mutex<VecDeque<Task>>, Condvar)>,
+}
 
-void *worker_loop(void *arg) {
-    ThreadPool *pool = (ThreadPool*)arg;
-    while (true) {
-        pthread_mutex_lock(&pool->lock);
-        while (pool->queue_empty)
-            pthread_cond_wait(&pool->cond, &pool->lock);
-        Task t = dequeue(&pool->queue);
-        pthread_mutex_unlock(&pool->lock);
-        execute(t);
+impl ThreadPool {
+    fn new(num_workers: usize) -> Self {
+        let queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
+        let workers = (0..num_workers).map(|_| {
+            let q = queue.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let (lock, cvar) = &*q;
+                    let mut q_lock = lock.lock().unwrap();
+                    while q_lock.is_empty() {
+                        q_lock = cvar.wait(q_lock).unwrap();
+                    }
+                    let task = q_lock.pop_front().unwrap();
+                    drop(q_lock);
+                    execute(task);
+                }
+            })
+        }).collect();
+        ThreadPool { workers, queue }
     }
 }
 ```

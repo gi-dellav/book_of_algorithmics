@@ -8,10 +8,12 @@ OpenMP (Open Multi-Processing) is the dominant parallel programming model for sh
 
 Distributes loop iterations across threads:
 
-```c
-#pragma omp parallel for
-for (int i = 0; i < N; i++)
+```rust
+use rayon::prelude::*;
+
+(0..N).into_par_iter().for_each(|i| {
     a[i] = b[i] + c[i];
+});
 ```
 
 Each thread executes a contiguous chunk of iterations. The chunk size is N / num_threads by default.
@@ -20,28 +22,32 @@ Each thread executes a contiguous chunk of iterations. The chunk size is N / num
 
 Creates a team of threads that execute the same block. Combine with `omp_get_thread_num()` for SPMD (Single Program, Multiple Data):
 
-```c
-#pragma omp parallel
-{
-    int tid = omp_get_thread_num();
-    int nthreads = omp_get_num_threads();
-    int chunk = N / nthreads;
-    int start = tid * chunk;
-    int end = (tid == nthreads - 1) ? N : start + chunk;
-    for (int i = start; i < end; i++)
-        a[i] = b[i] + c[i];
-}
+```rust
+use std::thread;
+
+let nthreads = thread::available_parallelism().unwrap().get();
+thread::scope(|s| {
+    for tid in 0..nthreads {
+        let chunk = N / nthreads;
+        let start = tid * chunk;
+        let end = if tid == nthreads - 1 { N } else { start + chunk };
+        s.spawn(move || {
+            for i in start..end {
+                unsafe { a[i] = b[i] + c[i]; }
+            }
+        });
+    }
+});
 ```
 
 ### `reduction`
 
 Combines per-thread partial results into a global result:
 
-```c
-int total = 0;
-#pragma omp parallel for reduction(+:total)
-for (int i = 0; i < N; i++)
-    total += a[i];
+```rust
+use rayon::prelude::*;
+
+let total: i32 = a.par_iter().sum();
 ```
 
 Supported reduction operators: `+`, `*`, `-`, `&`, `|`, `^`, `&&`, `||`, `min`, `max`. The compiler creates a private copy of `total` per thread, accumulates locally, and combines with the operator at the end. This avoids atomic operations in the inner loop — critical for performance.
@@ -50,23 +56,29 @@ Supported reduction operators: `+`, `*`, `-`, `&`, `|`, `^`, `&&`, `||`, `min`, 
 
 Protect shared variables:
 
-```c
-#pragma omp parallel for
-for (int i = 0; i < N; i++) {
-    int result = expensive_computation(i);
-    #pragma omp critical
-    {
-        shared_sum += result;
-        shared_count++;
-    }
-}
+```rust
+use rayon::prelude::*;
+use std::sync::Mutex;
+
+let shared_sum = Mutex::new(0);
+let shared_count = Mutex::new(0);
+
+(0..N).into_par_iter().for_each(|i| {
+    let result = expensive_computation(i);
+    let mut sum = shared_sum.lock().unwrap();
+    *sum += result;
+    *shared_count.lock().unwrap() += 1;
+});
 ```
 
 `atomic` is lighter — it's a single hardware atomic instruction:
 
-```c
-#pragma omp atomic
-shared_sum += result;  // Compiles to lock add (or lock xadd on x86)
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static SHARED_SUM: AtomicI32 = AtomicI32::new(0);
+
+SHARED_SUM.fetch_add(result, Ordering::Relaxed);  // Compiles to lock add (or lock xadd on x86)
 ```
 
 `critical` allows arbitrary code in the protected section; `atomic` only allows simple arithmetic/bitwise operations. `atomic` is ~5× faster than `critical` for simple operations.
@@ -75,16 +87,14 @@ shared_sum += result;  // Compiles to lock add (or lock xadd on x86)
 
 Creates asynchronous tasks that the runtime schedules dynamically:
 
-```c
-int fib(int n) {
-    if (n < 2) return n;
-    int x, y;
-    #pragma omp task shared(x)
-    x = fib(n-1);
-    #pragma omp task shared(y)
-    y = fib(n-2);
-    #pragma omp taskwait
-    return x + y;
+```rust
+fn fib(n: i32) -> i32 {
+    if n < 2 { return n; }
+    let (x, y) = rayon::join(
+        || fib(n - 1),
+        || fib(n - 2),
+    );
+    x + y
 }
 ```
 
@@ -94,15 +104,21 @@ Tasks enable parallelism for irregular workloads (recursion, while loops, graph 
 
 The `schedule` clause controls loop iteration distribution:
 
-```c
-#pragma omp parallel for schedule(static, 16)
-for (int i = 0; i < N; i++) ...
+```rust
+use rayon::prelude::*;
 
-#pragma omp parallel for schedule(dynamic, 16)
-for (int i = 0; i < N; i++) ...
+// rayon uses work-stealing by default (similar to guided)
+(0..N).into_par_iter().for_each(|i| { /* ... */ });
 
-#pragma omp parallel for schedule(guided, 16)
-for (int i = 0; i < N; i++) ...
+// For explicit chunk size: use par_chunks or chunks()
+(0..N).into_par_iter().chunks(16).for_each(|chunk| {
+    for i in chunk { /* ... */ }
+});
+
+// Or operate on slices directly for static-like scheduling:
+a.par_chunks_mut(16).for_each(|chunk| {
+    /* ... */
+});
 ```
 
 - **`static[, chunk]`**: iterations divided into chunks of `chunk` size, assigned round-robin to threads at compile time. Zero runtime overhead. Best when all iterations take the same time.
@@ -124,67 +140,73 @@ Performance (Zen 2, 8 cores, N = 10⁷, varying iteration cost: 10% of iteration
 
 OpenMP threads share memory but have private variables:
 
-```c
-int shared_var = 0;  // Shared by default (in C)
+```rust
+use std::sync::Mutex;
+use rayon::prelude::*;
 
-#pragma omp parallel
-{
-    int private_var = 0;  // Private: each thread has its own copy
-    // Stack variables declared inside the parallel region are private
-}
+let shared_var = Mutex::new(0);  // Shared, protected by Mutex
 
-#pragma omp parallel for firstprivate(shared_var)
-for (int i = 0; i < N; i++) {
-    // Each thread gets a copy of shared_var, initialized to its value before the loop
-}
+(0..N).into_par_iter().for_each(|_| {
+    let private_var = 0;  // Private: each thread has its own copy
+    // Stack variables declared inside the closure are private
+});
 
-#pragma omp parallel for lastprivate(result)
-for (int i = 0; i < N; i++) {
-    result = compute(i);
-    // The value from the last iteration (logically) is copied out
-}
+// firstprivate: clone a value into each thread
+let shared_copy = *shared_var.lock().unwrap();
+(0..N).into_par_iter().for_each(|i| {
+    let local = shared_copy;  // Each thread gets its own copy
+});
+
+// lastprivate: capture the logically-last value
+let result = Mutex::new(0);
+(0..N).into_par_iter().for_each(|i| {
+    *result.lock().unwrap() = compute(i);
+    // The last thread to execute writes the final value
+});
 ```
 
 ## The `nowait` Optimization
 
 By default, `parallel for` and `sections` have an implicit barrier at the end. `nowait` removes it:
 
-```c
-#pragma omp parallel
-{
-    #pragma omp for nowait
-    for (int i = 0; i < N; i++)
-        a[i] = compute_a(i);
-    
-    #pragma omp for
-    for (int i = 0; i < N; i++)
-        b[i] = compute_b(i, a[i]);  // Depends on a[i]
-}
+```rust
+use rayon::prelude::*;
+
+// rayon's parallel iterators use work-stealing.
+// Threads that finish a[i] can start b[i] independently.
+rayon::join(
+    || (0..N).into_par_iter().for_each(|i| a[i] = compute_a(i)),
+    || (0..N).into_par_iter().for_each(|i| b[i] = compute_b(i, a[i])),
+);
+// Without join (sequential ordering), there's an implicit barrier.
 ```
 
 Without `nowait`: threads finish the first loop, wait at barrier, then start the second. With `nowait`: a thread finishing its first-loop chunk moves immediately to the second loop (processing `b[i]` for `i` where `a[i]` is done). This overlaps independent work.
 
 ## Nested Parallelism
 
-```c
-omp_set_nested(1);
+```rust
+use rayon::prelude::*;
 
-#pragma omp parallel for num_threads(4)
-for (int i = 0; i < 4; i++) {
-    #pragma omp parallel for num_threads(2)
-    for (int j = 0; j < N; j++) {
-        // 4 × 2 = 8 threads total
-    }
-}
+// Nested parallelism (generally not recommended; oversubscribes)
+(0..4).into_par_iter().for_each(|i| {
+    (0..N).into_par_iter().for_each(|j| {
+        // rayon manages total threads globally
+    });
+});
 ```
 
 Generally not recommended — the thread pool can oversubscribe. Better: collapse the loops into one:
 
-```c
-#pragma omp parallel for collapse(2)
-for (int i = 0; i < M; i++)
-    for (int j = 0; j < N; j++)
-        a[i][j] = b[i][j] + c[i][j];
+```rust
+use rayon::prelude::*;
+
+// Flatten 2D loops into 1D parallel iterator
+(0..M * N).into_par_iter().for_each(|idx| {
+    let i = idx / N;
+    let j = idx % N;
+    a[i][j] = b[i][j] + c[i][j];
+});
 ```
 
 Turns M×N iterations into a single loop of M×N iterations, distributable across all threads.

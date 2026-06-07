@@ -69,10 +69,10 @@ Intel's counterpart to `syscall`. Used on 32-bit systems; `syscall` is preferred
 
 For read-only, non-security-sensitive syscalls like `gettimeofday` and `clock_gettime`, Linux provides the **vDSO** (virtual dynamic shared object) — a small shared library mapped into every process's address space that performs the syscall in userspace by reading from a memory page shared with the kernel. This eliminates the kernel transition entirely for these operations.
 
-```c
+```rust
 // This may never enter the kernel:
-struct timespec ts;
-clock_gettime(CLOCK_MONOTONIC, &ts);  // ~15 ns via vDSO
+let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };  // ~15 ns via vDSO
 ```
 
 ## Why Syscalls Are Expensive

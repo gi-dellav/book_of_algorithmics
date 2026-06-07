@@ -19,19 +19,23 @@ Input:  AAAABBBCCD
 Output: A4 B3 C2 D1
 ```
 
-```c
-int rle_encode(const char *src, int n, char *dst) {
-    int out = 0;
-    for (int i = 0; i < n; ) {
-        char c = src[i];
-        int count = 1;
-        while (i + count < n && src[i + count] == c && count < 255)
-            count++;
-        dst[out++] = c;
-        dst[out++] = count;
+```rust
+fn rle_encode(src: &[u8], dst: &mut [u8]) -> usize {
+    let mut out: usize = 0;
+    let mut i: usize = 0;
+    while i < src.len() {
+        let c = src[i];
+        let mut count: usize = 1;
+        while i + count < src.len() && src[i + count] == c && count < 255 {
+            count += 1;
+        }
+        dst[out] = c;
+        out += 1;
+        dst[out] = count as u8;
+        out += 1;
         i += count;
     }
-    return out;
+    out
 }
 ```
 
@@ -48,11 +52,12 @@ Input:  [1000, 1003, 1008, 1007, 1010]
 Deltas: [1000, +3, +5, -1, +3]
 ```
 
-```c
-void delta_encode(const int *src, int n, int *dst) {
+```rust
+fn delta_encode(src: &[i32], dst: &mut [i32]) {
     dst[0] = src[0];
-    for (int i = 1; i < n; i++)
-        dst[i] = src[i] - src[i-1];
+    for i in 1..src.len() {
+        dst[i] = src[i] - src[i - 1];
+    }
 }
 ```
 
@@ -62,30 +67,33 @@ Combine with varint encoding: small deltas → few bytes. Used in time-series da
 
 Most integers in real data are small. A 4-byte `int` can store values up to 2³¹, but if most values are under 128, the top 3 bytes are always zero. Varint encoding stores small numbers in fewer bytes:
 
-```c
+```rust
 // Encode uint32 as varint (up to 5 bytes)
-int varint_encode(uint32_t x, uint8_t *dst) {
-    int pos = 0;
-    while (x >= 0x80) {
-        dst[pos++] = (x & 0x7F) | 0x80;  // Lower 7 bits, continuation bit set
+fn varint_encode(mut x: u32, dst: &mut [u8]) -> usize {
+    let mut pos: usize = 0;
+    while x >= 0x80 {
+        dst[pos] = (x & 0x7F) as u8 | 0x80;  // Lower 7 bits, continuation bit set
+        pos += 1;
         x >>= 7;
     }
-    dst[pos++] = x & 0x7F;  // Final byte, continuation bit clear
-    return pos;
+    dst[pos] = (x & 0x7F) as u8;  // Final byte, continuation bit clear
+    pos += 1;
+    pos
 }
 
-uint32_t varint_decode(const uint8_t *src, int *consumed) {
-    uint32_t x = 0;
-    int shift = 0;
-    int pos = 0;
-    while (1) {
-        uint8_t b = src[pos++];
-        x |= (uint32_t)(b & 0x7F) << shift;
-        if (!(b & 0x80)) break;
+fn varint_decode(src: &[u8], consumed: &mut usize) -> u32 {
+    let mut x: u32 = 0;
+    let mut shift: u32 = 0;
+    let mut pos: usize = 0;
+    loop {
+        let b = src[pos];
+        pos += 1;
+        x |= ((b & 0x7F) as u32) << shift;
+        if (b & 0x80) == 0 { break; }
         shift += 7;
     }
     *consumed = pos;
-    return x;
+    x
 }
 ```
 
@@ -108,12 +116,17 @@ Now the entire sequence (after the first two values) is zeros — 1 byte each. U
 SIMD can process 16–64 bytes at once, making compression and decompression dramatically faster.
 
 **SIMD bit-packing**: For values with known small range, pack 32 values into the fewest bits possible:
-```c
+```rust
 // Pack 32 4-bit values into 16 bytes
-__m128i pack_4bit(const uint32_t *src) {
-    __m128i v0 = _mm_loadu_si128((__m128i*)src);      // values 0-3
-    __m128i v1 = _mm_loadu_si128((__m128i*)(src+4));  // values 4-7
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn pack_4bit(src: *const u32) -> __m128i {
+    let v0 = _mm_loadu_si128(src as *const __m128i);      // values 0-3
+    let v1 = _mm_loadu_si128(src.add(4) as *const __m128i);  // values 4-7
     // ... pack with shifts and ORs ...
+    todo!()
 }
 ```
 
@@ -137,9 +150,11 @@ Codes: A=0, B=10, C=110, D=111
 
 Build the tree once (from known or sampled frequencies), then encode/decode using lookup tables:
 
-```c
+```rust
 // Decoding with a 256-entry lookup table (for codes up to 8 bits)
-struct { uint8_t symbol; uint8_t length; } decode_table[256];
+#[repr(C)]
+struct DecodeEntry { symbol: u8, length: u8 }
+let decode_table: [DecodeEntry; 256];
 // Populated so that for any 8-bit prefix, we know the first symbol and its length
 ```
 

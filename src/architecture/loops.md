@@ -29,8 +29,8 @@ jle label       ; jump if rax <= 0, signed (SF≠OF or ZF=1)
 
 ## How a For Loop Compiles
 
-```c
-for (int i = 0; i < n; i++) {
+```rust
+for i in 0..n {
     sum += a[i];
 }
 ```
@@ -73,9 +73,10 @@ When you write `for (int i = n-1; i >= 0; i--)`, you're hinting to the compiler 
 
 The compiler may unroll a loop — duplicate the body multiple times and adjust the counter accordingly — to reduce the overhead of the loop control instructions and expose more instruction-level parallelism.
 
-```c
-for (int i = 0; i < n; i++)
+```rust
+for i in 0..n {
     sum += a[i];
+}
 ```
 
 After unrolling by 4:
@@ -97,9 +98,10 @@ After unrolling by 4:
 Four additions per decrement-branch pair means the branch overhead is 4× lower. But the loop body is larger, consuming more I-cache and decode bandwidth. The optimal unroll factor depends on the CPU's execution width and the cost of the loop body.
 
 You can influence unrolling with pragmas:
-```c
-#pragma GCC unroll 4
-for (int i = 0; i < n; i++) { ... }
+```rust
+// Unrolling hints: use #![feature(unroll_for_loops)] + #[unroll(4)] on nightly,
+// or pass -C llvm-args=-unroll-count=4 to rustc.
+for i in 0..n { /* ... */ }
 ```
 
 Or with `-funroll-loops` (enabled at `-O3` in GCC). But compilers aren't always right — profile with and without unrolling for your specific case.

@@ -12,10 +12,16 @@ The Translation Lookaside Buffer (TLB) caches virtual-to-physical address transl
 
 ## The Strided Access Experiment
 
-```c
-for (int step = 1; step <= 4096; step *= 2) {
-    for (int i = 0; i < n; i += step)
-        a[i]++;  // Access one element every 'step' ints
+```rust
+let mut step = 1;
+while step <= 4096 {
+    let mut i = 0;
+    while i < n {
+        // SAFETY: i is within bounds
+        unsafe { *a.as_mut_ptr().add(i) += 1; }  // Access one element every 'step' ints
+        i += step;
+    }
+    step *= 2;
 }
 ```
 
@@ -33,10 +39,19 @@ If your working set > TLB reach, you suffer TLB misses. For a 16 GB data structu
 
 ## Huge Pages: Measurement
 
-```c
+```rust
 // madvise to request huge pages for this allocation
-void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
-               MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+use std::ptr;
+let p = unsafe {
+    libc::mmap(
+        ptr::null_mut(),
+        size,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_HUGETLB,
+        -1,
+        0,
+    )
+};
 ```
 
 Streaming through 16 GB with 4 KB pages vs. 2 MB huge pages:
@@ -73,12 +88,12 @@ The tradeoff: larger pages reduce TLB pressure and page table depth, but increas
 
 ## `madvise` and Memory Hints
 
-```c
-madvise(ptr, size, MADV_SEQUENTIAL);    // Will be accessed sequentially → prefetch aggressively
-madvise(ptr, size, MADV_RANDOM);        // Will be accessed randomly → don't prefetch
-madvise(ptr, size, MADV_HUGEPAGE);      // Please use huge pages for this region
-madvise(ptr, size, MADV_DONTNEED);      // I won't need this soon → evict from cache
-madvise(ptr, size, MADV_FREE);          // I'm done with this → zero-fill on next access
+```rust
+unsafe { libc::madvise(ptr, size, libc::MADV_SEQUENTIAL); }    // Will be accessed sequentially → prefetch aggressively
+unsafe { libc::madvise(ptr, size, libc::MADV_RANDOM); }        // Will be accessed randomly → don't prefetch
+unsafe { libc::madvise(ptr, size, libc::MADV_HUGEPAGE); }      // Please use huge pages for this region
+unsafe { libc::madvise(ptr, size, libc::MADV_DONTNEED); }      // I won't need this soon → evict from cache
+unsafe { libc::madvise(ptr, size, libc::MADV_FREE); }          // I'm done with this → zero-fill on next access
 ```
 
 These hints help the kernel manage memory more efficiently. `MADV_SEQUENTIAL` is particularly effective for large streaming reads — it tells the kernel to increase the read-ahead window and use non-temporal-like eviction.

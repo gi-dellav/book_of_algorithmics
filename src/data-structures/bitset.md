@@ -8,17 +8,23 @@ A `std::set<int>` for 1M elements costs ~32 MB (32 bytes per node). A bitmap for
 
 ## Basic Operations
 
-```c
-void bitmap_set(uint64_t *bitmap, int x) {
-    bitmap[x >> 6] |= 1ULL << (x & 63);
+```rust
+fn bitmap_set(bitmap: *mut u64, x: usize) {
+    unsafe {
+        *bitmap.add(x >> 6) |= 1u64 << (x & 63);
+    }
 }
 
-void bitmap_clear(uint64_t *bitmap, int x) {
-    bitmap[x >> 6] &= ~(1ULL << (x & 63));
+fn bitmap_clear(bitmap: *mut u64, x: usize) {
+    unsafe {
+        *bitmap.add(x >> 6) &= !(1u64 << (x & 63));
+    }
 }
 
-bool bitmap_test(uint64_t *bitmap, int x) {
-    return (bitmap[x >> 6] >> (x & 63)) & 1;
+fn bitmap_test(bitmap: *const u64, x: usize) -> bool {
+    unsafe {
+        ((*bitmap.add(x >> 6) >> (x & 63)) & 1) != 0
+    }
 }
 ```
 
@@ -28,14 +34,16 @@ Three instructions each: shift, AND/mask, and memory access. ~3ns per operation 
 
 Iterating over a bitmap by testing every bit takes O(range) time — terrible for sparse sets. Instead, skip whole 64-bit words of zeros:
 
-```c
-void bitmap_iterate(uint64_t *bitmap, int n_words, void (*fn)(int)) {
-    for (int i = 0; i < n_words; i++) {
-        uint64_t word = bitmap[i];
-        while (word) {
-            int bit = __builtin_ctzll(word);  // Count trailing zeros → position
-            fn(i * 64 + bit);
-            word &= word - 1;  // Clear lowest set bit
+```rust
+fn bitmap_iterate(bitmap: *const u64, n_words: usize, f: fn(usize)) {
+    unsafe {
+        for i in 0..n_words {
+            let mut word = *bitmap.add(i);
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                f(i * 64 + bit);
+                word &= word - 1;
+            }
         }
     }
 }
@@ -47,12 +55,15 @@ For very dense bitmaps (>50% ones), it's faster to iterate all positions and tes
 
 ## Population Count (Cardinality)
 
-```c
-int bitmap_popcount(uint64_t *bitmap, int n_words) {
-    int count = 0;
-    for (int i = 0; i < n_words; i++)
-        count += __builtin_popcountll(bitmap[i]);
-    return count;
+```rust
+fn bitmap_popcount(bitmap: *const u64, n_words: usize) -> u32 {
+    let mut count: u32 = 0;
+    unsafe {
+        for i in 0..n_words {
+            count += (*bitmap.add(i)).count_ones();
+        }
+    }
+    count
 }
 ```
 
@@ -60,18 +71,25 @@ int bitmap_popcount(uint64_t *bitmap, int n_words) {
 
 With AVX-512, `_mm512_popcnt_epi64` processes 8 64-bit words per instruction:
 
-```c
-int bitmap_popcount_avx512(uint64_t *bitmap, int n_words) {
-    __m512i vsum = _mm512_setzero_si512();
-    int i = 0;
-    for (; i + 8 <= n_words; i += 8) {
-        __m512i v = _mm512_loadu_si512(&bitmap[i]);
-        vsum = _mm512_add_epi64(vsum, _mm512_popcnt_epi64(v));
+```rust
+use std::arch::x86_64::*;
+
+fn bitmap_popcount_avx512(bitmap: *const u64, n_words: usize) -> i32 {
+    unsafe {
+        let mut vsum = _mm512_setzero_si512();
+        let mut i = 0;
+        while i + 8 <= n_words {
+            let v = _mm512_loadu_si512(bitmap.add(i) as *const __m512i);
+            vsum = _mm512_add_epi64(vsum, _mm512_popcnt_epi64(v));
+            i += 8;
+        }
+        let mut count = _mm512_reduce_add_epi64(vsum);
+        while i < n_words {
+            count += (*bitmap.add(i)).count_ones() as i32;
+            i += 1;
+        }
+        count
     }
-    int count = _mm512_reduce_add_epi64(vsum);
-    for (; i < n_words; i++)
-        count += __builtin_popcountll(bitmap[i]);
-    return count;
 }
 ```
 
@@ -79,10 +97,13 @@ int bitmap_popcount_avx512(uint64_t *bitmap, int n_words) {
 
 ## Set Operations: Union, Intersection, Difference
 
-```c
-void bitmap_union(uint64_t *dst, uint64_t *a, uint64_t *b, int n_words) {
-    for (int i = 0; i < n_words; i++)
-        dst[i] = a[i] | b[i];
+```rust
+fn bitmap_union(dst: *mut u64, a: *const u64, b: *const u64, n_words: usize) {
+    unsafe {
+        for i in 0..n_words {
+            *dst.add(i) = *a.add(i) | *b.add(i);
+        }
+    }
 }
 ```
 
@@ -97,21 +118,24 @@ For sparse sets, a dense bitmap wastes space. A set with 100 elements in [0, 10�
 
 The threshold 4096 balances array and bitmap memory cost: 4096 × 2 bytes = 8 KB.
 
-```c
+```rust
+#[repr(C)]
 struct RoaringContainer {
-    uint16_t key;              // High 16 bits of all elements
-    bool is_bitmap;
-    union {
-        uint16_t *sorted_array;
-        uint64_t bitmap[1024];  // 2^16 bits
-    };
-    int16_t cardinality;
-};
+    key: u16,
+    is_bitmap: bool,
+    // union {
+    //     *mut u16 sorted_array;
+    //     [u64; 1024] bitmap;  // 2^16 bits
+    // }
+    data_ptr: *mut u8,
+    cardinality: i16,
+}
 
+#[repr(C)]
 struct RoaringBitmap {
-    RoaringContainer *containers;
-    int32_t num_containers;
-};
+    containers: *mut RoaringContainer,
+    num_containers: i32,
+}
 ```
 
 Operations dispatch per container: two arrays merge, two bitmaps OR, array+bitmap iterates the array setting bits. Performance: union of two Roaring bitmaps (1M elements, 1% density, range [0, 10⁹)): ~2 ms vs. ~15 ms for a dense bitmap. The Roaring bitmap is ~7× faster and uses ~1% of the memory.
@@ -125,17 +149,20 @@ Beyond set membership, bitmaps support two advanced operations crucial for succi
 
 **Rank with precomputed blocks**: divide into blocks of 512 bits, precompute cumulative popcount per block:
 
-```c
-int rank(uint64_t *bitmap, uint32_t *block_rank, int i) {
-    int block = i / 512;
-    int offset = i % 512;
-    int word_start = block * 8 + (offset / 64);
-    int bit_offset = offset % 64;
-    int count = block_rank[block];
-    for (int w = block * 8; w < word_start; w++)
-        count += __builtin_popcountll(bitmap[w]);
-    count += __builtin_popcountll(bitmap[word_start] & ((1ULL << bit_offset) - 1));
-    return count;
+```rust
+fn rank(bitmap: *const u64, block_rank: *const u32, i: usize) -> u32 {
+    unsafe {
+        let block = i / 512;
+        let offset = i % 512;
+        let word_start = block * 8 + (offset / 64);
+        let bit_offset = offset % 64;
+        let mut count = *block_rank.add(block);
+        for w in (block * 8)..word_start {
+            count += (*bitmap.add(w)).count_ones();
+        }
+        count += ((*bitmap.add(word_start)) & ((1u64 << bit_offset) - 1)).count_ones();
+        count
+    }
 }
 ```
 
@@ -149,30 +176,36 @@ Rank and select enable **succinct data structures**: compressed representations 
 
 For extracting all set bits, `tzcnt` per word is optimal. For bulk extraction from 4 words at once with an early skip:
 
-```c
-void bitmap_iterate_avx2(uint64_t *bitmap, int n_words, void (*fn)(int)) {
-    int i = 0;
-    for (; i + 4 <= n_words; i += 4) {
-        __m256i v = _mm256_loadu_si256((__m256i*)&bitmap[i]);
-        if (_mm256_testz_si256(v, v) == 0) {  // Not all zeros
-            uint64_t words[4];
-            _mm256_storeu_si256((__m256i*)words, v);
-            for (int j = 0; j < 4; j++) {
-                uint64_t w = words[j];
-                while (w) {
-                    int bit = __builtin_ctzll(w);
-                    fn((i + j) * 64 + bit);
-                    w &= w - 1;
+```rust
+use std::arch::x86_64::*;
+
+fn bitmap_iterate_avx2(bitmap: *const u64, n_words: usize, f: fn(usize)) {
+    unsafe {
+        let mut i = 0;
+        while i + 4 <= n_words {
+            let v = _mm256_loadu_si256(bitmap.add(i) as *const __m256i);
+            if _mm256_testz_si256(v, v) == 0 {
+                let mut words: [u64; 4] = [0; 4];
+                _mm256_storeu_si256(words.as_mut_ptr() as *mut __m256i, v);
+                for j in 0..4 {
+                    let mut w = words[j];
+                    while w != 0 {
+                        let bit = w.trailing_zeros() as usize;
+                        f((i + j) * 64 + bit);
+                        w &= w - 1;
+                    }
                 }
             }
+            i += 4;
         }
-    }
-    for (; i < n_words; i++) {
-        uint64_t w = bitmap[i];
-        while (w) {
-            int bit = __builtin_ctzll(w);
-            fn(i * 64 + bit);
-            w &= w - 1;
+        while i < n_words {
+            let mut w = *bitmap.add(i);
+            while w != 0 {
+                let bit = w.trailing_zeros() as usize;
+                f(i * 64 + bit);
+                w &= w - 1;
+            }
+            i += 1;
         }
     }
 }

@@ -2,21 +2,22 @@
 
 In 1999, id Software released Quake III Arena. Buried in the source code was this:
 
-```c
-float Q_rsqrt(float number) {
-    long i;
-    float x2, y;
-    const float threehalfs = 1.5F;
+```rust
+fn q_rsqrt(number: f32) -> f32 {
+    let x2: f32;
+    let y: f32;
+    let i: i32;
+    let threehalfs: f32 = 1.5;
 
-    x2 = number * 0.5F;
+    x2 = number * 0.5;
     y  = number;
-    i  = *(long *)&y;            // Evil floating-point bit hack
+    i  = unsafe { std::mem::transmute::<f32, i32>(y) };  // Evil floating-point bit hack
     i  = 0x5f3759df - (i >> 1);  // What the fuck?
-    y  = *(float *)&i;
+    y  = unsafe { std::mem::transmute::<i32, f32>(i) };
     y  = y * (threehalfs - (x2 * y * y));  // 1st iteration
     // y  = y * (threehalfs - (x2 * y * y));  // 2nd iteration (removed)
 
-    return y;
+    y
 }
 ```
 
@@ -87,7 +88,7 @@ y_{n+1} = y × (1.5 − 0.5 × x × y × y)
 ```
 
 reduces the error to ~0.2%. The code uses the equivalent but slightly faster form:
-```c
+```rust
 y = y * (threehalfs - (x2 * y * y));  // x2 = number * 0.5
 ```
 

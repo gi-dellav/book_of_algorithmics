@@ -36,9 +36,21 @@ Linux supports huge pages (2 MB) and gigantic pages (1 GB). Huge pages:
 
 ## `mmap` for File I/O
 
-```c
-int fd = open("data.bin", O_RDONLY);
-char *data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+```rust
+use std::fs::File;
+use std::os::unix::io::AsRawFd;
+
+let file = File::open("data.bin").unwrap();
+let data = unsafe {
+    libc::mmap(
+        std::ptr::null_mut(),
+        file_size,
+        libc::PROT_READ,
+        libc::MAP_PRIVATE,
+        file.as_raw_fd(),
+        0,
+    ) as *mut u8
+};
 // Now data[i] accesses the file contents via virtual memory
 ```
 

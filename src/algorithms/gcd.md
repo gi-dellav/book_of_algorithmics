@@ -4,14 +4,16 @@ The greatest common divisor is one of the oldest algorithms in computer science 
 
 ## Euclid's Algorithm
 
-```c
-uint64_t gcd_euclid(uint64_t a, uint64_t b) {
-    while (b != 0) {
-        uint64_t t = a % b;
+```rust
+fn gcd_euclid(a: u64, b: u64) -> u64 {
+    let mut a = a;
+    let mut b = b;
+    while b != 0 {
+        let t = a % b;
         a = b;
         b = t;
     }
-    return a;
+    a
 }
 ```
 
@@ -21,21 +23,23 @@ Each iteration uses the `div` instruction — 17–44 cycles on Zen 2. After ~40
 
 The binary GCD replaces division with subtraction and bit shifts:
 
-```c
-uint64_t gcd_binary(uint64_t a, uint64_t b) {
-    if (a == 0) return b;
-    if (b == 0) return a;
-    
-    int shift = __builtin_ctzll(a | b);  // Common factor of 2
-    a >>= __builtin_ctzll(a);            // Remove factors of 2 from a
-    
-    do {
-        b >>= __builtin_ctzll(b);        // Remove factors of 2 from b
-        if (a > b) { uint64_t t = a; a = b; b = t; }
+```rust
+fn gcd_binary(a: u64, b: u64) -> u64 {
+    if a == 0 { return b; }
+    if b == 0 { return a; }
+
+    let shift = (a | b).trailing_zeros() as u32;
+    let mut a = a >> a.trailing_zeros();
+    let mut b = b;
+
+    loop {
+        b >>= b.trailing_zeros();
+        if a > b { std::mem::swap(&mut a, &mut b); }
         b -= a;
-    } while (b != 0);
-    
-    return a << shift;
+        if b == 0 { break; }
+    }
+
+    a << shift
 }
 ```
 
@@ -52,24 +56,24 @@ No division instruction. The loop body: `tzcnt` + `shr` + `cmp` + `cmov` + `sub`
 
 The bottleneck in binary GCD is the loop control and the `if (a > b)` swap. Lemire and Corderoy observed that the swap can be eliminated by tracking which variable is "current":
 
-```c
-uint64_t gcd_lemire(uint64_t a, uint64_t b) {
-    if (a == 0) return b;
-    if (b == 0) return a;
-    
-    int shift = __builtin_ctzll(a | b);
-    a >>= __builtin_ctzll(a);
-    b >>= __builtin_ctzll(b);
-    
-    while (a != b) {
-        if (a < b) {
-            uint64_t t = a; a = b; b = t;
+```rust
+fn gcd_lemire(a: u64, b: u64) -> u64 {
+    if a == 0 { return b; }
+    if b == 0 { return a; }
+
+    let shift = (a | b).trailing_zeros() as u32;
+    let mut a = a >> a.trailing_zeros();
+    let mut b = b >> b.trailing_zeros();
+
+    while a != b {
+        if a < b {
+            std::mem::swap(&mut a, &mut b);
         }
         a -= b;
-        a >>= __builtin_ctzll(a);
+        a >>= a.trailing_zeros();
     }
-    
-    return a << shift;
+
+    a << shift
 }
 ```
 

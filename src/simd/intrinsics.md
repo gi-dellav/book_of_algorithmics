@@ -4,23 +4,24 @@ When auto-vectorization fails — or when you need control over the exact instru
 
 ## Vector Types
 
-```c
-#include <x86intrin.h>
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{
+    // 128-bit SSE
+    __m128,    // 4 × f32
+    __m128d,   // 2 × f64
+    __m128i,   // 16 × i8, 8 × i16, 4 × i32, 2 × i64
 
-// 128-bit SSE
-__m128   v4float;    // 4 × float
-__m128d  v2double;   // 2 × double
-__m128i  vints;      // 16 × int8, 8 × int16, 4 × int32, 2 × int64
+    // 256-bit AVX/AVX2
+    __m256,    // 8 × f32
+    __m256d,   // 4 × f64
+    __m256i,   // 32 × i8, 16 × i16, 8 × i32, 4 × i64
 
-// 256-bit AVX/AVX2
-__m256   v8float;    // 8 × float
-__m256d  v4double;   // 4 × double
-__m256i  vints;      // 32 × int8, 16 × int16, 8 × int32, 4 × int64
-
-// 512-bit AVX-512
-__m512   v16float;   // 16 × float
-__m512d  v8double;   // 8 × double
-__m512i  vints;      // 64 × int8, 32 × int16, 16 × int32, 8 × int64
+    // 512-bit AVX-512
+    __m512,    // 16 × f32
+    __m512d,   // 8 × f64
+    __m512i,   // 64 × i8, 32 × i16, 16 × i32, 8 × i64
+};
 ```
 
 ## Naming Convention
@@ -41,14 +42,17 @@ Examples:
 
 ## Basic Operations
 
-```c
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{__m256, _mm256_loadu_ps, _mm256_add_ps, _mm256_storeu_ps};
+
 // Array addition with AVX2
-void add_arrays_avx2(float *a, float *b, float *c, int n) {
-    for (int i = 0; i < n; i += 8) {
-        __m256 va = _mm256_loadu_ps(a + i);  // Unaligned load
-        __m256 vb = _mm256_loadu_ps(b + i);
-        __m256 vc = _mm256_add_ps(va, vb);
-        _mm256_storeu_ps(c + i, vc);          // Unaligned store
+unsafe fn add_arrays_avx2(a: &[f32], b: &[f32], c: &mut [f32], n: usize) {
+    for i in (0..n).step_by(8) {
+        let va = _mm256_loadu_ps(&a[i]);  // Unaligned load
+        let vb = _mm256_loadu_ps(&b[i]);
+        let vc = _mm256_add_ps(va, vb);
+        _mm256_storeu_ps(&mut c[i], vc);   // Unaligned store
     }
 }
 ```
@@ -57,13 +61,17 @@ void add_arrays_avx2(float *a, float *b, float *c, int n) {
 
 A more readable alternative to intrinsics:
 
-```c
-typedef float v8sf __attribute__((vector_size(32)));  // 32 bytes = 8 floats
+```rust
+// Rust nightly equivalent of GCC vector extensions:
+#![feature(portable_simd)]
+use std::simd::Simd;
 
-v8sf va = *(v8sf *)(a + i);
-v8sf vb = *(v8sf *)(b + i);
-v8sf vc = va + vb;  // Looks like normal code, generates vaddps
-*(v8sf *)(c + i) = vc;
+type V8sf = Simd<f32, 8>;  // 32 bytes = 8 f32s
+
+let va = V8sf::from_slice(&a[i..]);
+let vb = V8sf::from_slice(&b[i..]);
+let vc = va + vb;  // Looks like normal code, generates vaddps
+vc.copy_to_slice(&mut c[i..]);
 ```
 
 GCC vector extensions support operators (+, -, *, /, &, |, ^, ~) directly, making the code cleaner than intrinsics. However, they don't support all operations (shuffles, permutations, comparison predicates need intrinsics). Use as a bridge between auto-vectorization and full intrinsics.
@@ -77,19 +85,18 @@ Writing intrinsics ties your code to a specific ISA. High-level SIMD libraries a
 - **VCL** (Agner Fog): Comprehensive vector class library, includes complex operations.
 - **xsimd**: Lightweight SIMD wrapper for C++.
 
-```cpp
-// Highway example
-#include <hwy/highway.h>
+```rust
+// Rust equivalent using portable_simd (nightly):
+#![feature(portable_simd)]
+use std::simd::Simd;
 
-namespace HWY_NAMESPACE {
-void Add(const float *a, const float *b, float *c, size_t n) {
-    const ScalableTag<float> d;
-    for (size_t i = 0; i < n; i += Lanes(d)) {
-        auto va = Load(d, a + i);
-        auto vb = Load(d, b + i);
-        Store(va + vb, d, c + i);
+fn add(a: &[f32], b: &[f32], c: &mut [f32]) {
+    const LANES: usize = 8;
+    for i in (0..a.len()).step_by(LANES) {
+        let va = Simd::<f32, 8>::from_slice(&a[i..]);
+        let vb = Simd::<f32, 8>::from_slice(&b[i..]);
+        (va + vb).copy_to_slice(&mut c[i..]);
     }
-}
 }
 ```
 

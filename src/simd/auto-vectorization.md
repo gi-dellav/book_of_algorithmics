@@ -39,57 +39,64 @@ file.c:36:8: note: not vectorized: number of iterations cannot be computed
 
 ### Unknown Iteration Count
 
-```c
+```rust
 // Not vectorized: n is unknown, could be 0 or very small
-void add(float *a, float *b, float *c, int n) {
-    for (int i = 0; i < n; i++)
+fn add(a: &[f32], b: &[f32], c: &mut [f32]) {
+    for i in 0..c.len() {
         c[i] = a[i] + b[i];
+    }
 }
 ```
 
 Fix: Use `unsigned` or `size_t` so the compiler knows n ≥ 0. Still not perfect — the compiler must generate a remainder loop for `n % 8 != 0`.
 
-```c
-void add(float *a, float *b, float *c, size_t n) {
-    for (size_t i = 0; i < n; i++)
+```rust
+fn add(a: &[f32], b: &[f32], c: &mut [f32]) {
+    for i in 0..a.len() {
         c[i] = a[i] + b[i];
+    }
 }
 ```
 
 ### Aliasing
 
-```c
-void scale_and_add(float *a, float *b, float s, int n) {
-    for (int i = 0; i < n; i++)
+```rust
+fn scale_and_add(a: &mut [f32], b: &[f32], s: f32) {
+    for i in 0..a.len() {
         a[i] = b[i] * s + a[i];  // 'a' and 'b' might alias
+    }
 }
 ```
 
 Fix: add `restrict`.
 
-```c
-void scale_and_add(float *restrict a, float *restrict b, float s, int n) {
-    for (int i = 0; i < n; i++)
+```rust
+fn scale_and_add(a: &mut [f32], b: &[f32], s: f32) {
+    // In Rust, &mut and & references are guaranteed not to alias
+    for i in 0..a.len() {
         a[i] = b[i] * s + a[i];
+    }
 }
 ```
 
 ### Dependencies Between Iterations
 
-```c
+```rust
 // Not vectorized: x[i] depends on x[i-1]
-for (int i = 1; i < n; i++)
+for i in 1..n {
     x[i] = x[i-1] + y[i];
+}
 ```
 
 This is a prefix sum (scan) — a true data dependency. Special algorithms exist for SIMD prefix sums (see `algorithms/prefix.md`), but the compiler won't vectorize it automatically.
 
 ### Non-Contiguous Access
 
-```c
+```rust
 // Strided access: the compiler may vectorize with gather (AVX2+) but it's slower
-for (int i = 0; i < n; i++)
+for i in 0..n {
     sum += a[i * stride];
+}
 ```
 
 If `stride` is a compile-time constant and small (2, 4), the compiler may use `shuffle` + `add` sequences. For large or variable stride, gather instructions (`vgatherdps`) are slow — often slower than scalar.
@@ -106,10 +113,11 @@ end
 ```
 
 **OpenMP**:
-```c
-#pragma omp simd
-for (int i = 0; i < n; i++)
+```rust
+// Use iterators for potential auto-vectorization by LLVM
+for i in 0..n {
     c[i] = a[i] + b[i];
+}
 ```
 
 **ISPC** (Intel SPMD Program Compiler): A dedicated language for writing SIMD kernels that compiles to AVX2/AVX-512/NEON. Used in game engines and renderers.

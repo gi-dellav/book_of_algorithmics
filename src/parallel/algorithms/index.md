@@ -32,22 +32,19 @@ Parallel:     (((a₀ + a₁) + (a₂ + a₃)) + ((a₄ + a₅) + (a₆ + a₇))
 
 Implementation:
 
-```c
-int parallel_sum(int *a, int n) {
-    if (n == 1) return a[0];
-    
-    // Divide in half
-    int mid = n / 2;
-    int left_sum, right_sum;
-    
-    #pragma omp task shared(left_sum)
-    left_sum = parallel_sum(a, mid);
-    
-    #pragma omp task shared(right_sum)
-    right_sum = parallel_sum(a + mid, n - mid);
-    
-    #pragma omp taskwait
-    return left_sum + right_sum;
+```rust
+fn parallel_sum(a: &[i32]) -> i32 {
+    if a.len() == 1 { return a[0]; }
+
+    let mid = a.len() / 2;
+    let (left_slice, right_slice) = a.split_at(mid);
+
+    let (left_sum, right_sum) = rayon::join(
+        || parallel_sum(left_slice),
+        || parallel_sum(right_slice),
+    );
+
+    left_sum + right_sum
 }
 ```
 
@@ -82,25 +79,40 @@ Final scan:       [1, 3, 6, 10, 15, 21, 28, 36]
 
 Work: O(n). Span: O(log n). Two passes, each O(log n) depth.
 
-```c
-void parallel_prefix_sum(int *a, int n) {
+```rust
+use rayon::prelude::*;
+
+fn parallel_prefix_sum(a: &mut [i32]) {
+    let n = a.len();
+    let a_ptr = a.as_mut_ptr();
+
     // Up-sweep
-    for (int stride = 1; stride < n; stride *= 2) {
-        #pragma omp parallel for
-        for (int i = stride - 1; i + stride < n; i += 2 * stride) {
-            a[i + stride] += a[i];
-        }
+    let mut stride = 1usize;
+    while stride < n {
+        let indices: Vec<usize> = (stride - 1..n)
+            .step_by(2 * stride)
+            .filter(|&i| i + stride < n)
+            .collect();
+        indices.into_par_iter().for_each(|i| unsafe {
+            *a_ptr.add(i + stride) += *a_ptr.add(i);
+        });
+        stride *= 2;
     }
-    
+
     // Down-sweep
-    a[n-1] = 0;
-    for (int stride = n/2; stride > 0; stride /= 2) {
-        #pragma omp parallel for
-        for (int i = stride - 1; i + stride < n; i += 2 * stride) {
-            int temp = a[i];
-            a[i] = a[i + stride];
-            a[i + stride] += temp;
-        }
+    unsafe { *a_ptr.add(n - 1) = 0; }
+    stride = n / 2;
+    while stride > 0 {
+        let indices: Vec<usize> = (stride - 1..n)
+            .step_by(2 * stride)
+            .filter(|&i| i + stride < n)
+            .collect();
+        indices.into_par_iter().for_each(|i| unsafe {
+            let temp = *a_ptr.add(i);
+            *a_ptr.add(i) = *a_ptr.add(i + stride);
+            *a_ptr.add(i + stride) += temp;
+        });
+        stride /= 2;
     }
 }
 ```

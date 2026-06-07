@@ -4,11 +4,14 @@ Matrix multiplication is the most studied algorithm in high-performance computin
 
 ## The Baseline
 
-```c
-for (int i = 0; i < n; i++)
-    for (int j = 0; j < n; j++)
-        for (int k = 0; k < n; k++)
-            C[i][j] += A[i][k] * B[k][j];
+```rust
+for i in 0..n {
+    for j in 0..n {
+        for k in 0..n {
+            c[i][j] += a[i][k] * b[k][j];
+        }
+    }
+}
 ```
 
 n = 1024, single precision. Performance: ~0.2 GFLOPS. The `B[k][j]` access has stride n (4 KB) — every access is a cache miss. The loop is memory-bound on RAM latency, not compute.
@@ -17,11 +20,14 @@ n = 1024, single precision. Performance: ~0.2 GFLOPS. The `B[k][j]` access has s
 
 Swap j and k loops:
 
-```c
-for (int i = 0; i < n; i++)
-    for (int k = 0; k < n; k++)
-        for (int j = 0; j < n; j++)
-            C[i][j] += A[i][k] * B[k][j];
+```rust
+for i in 0..n {
+    for k in 0..n {
+        for j in 0..n {
+            c[i][j] += a[i][k] * b[k][j];
+        }
+    }
+}
 ```
 
 Now the inner loop accesses `C[i][j]` and `B[k][j]` sequentially (contiguous memory). `A[i][k]` is constant within the inner loop — it can be hoisted. Performance: ~1.2 GFLOPS (6× speedup). The inner loop is now streaming through memory — bandwidth-bound rather than latency-bound.
@@ -30,7 +36,7 @@ Now the inner loop accesses `C[i][j]` and `B[k][j]` sequentially (contiguous mem
 
 The inner loop is a dot product of `B[k][j]` and a scalar `A[i][k]`, stored into `C[i][j]`. The compiler can vectorize this (with `-march=native`):
 
-```c
+```rust
 // Compiler-generated AVX2 inner loop:
 // vbroadcastss A[i][k] → ymm0
 // vmovups B[k*stride + j] → ymm1
@@ -43,18 +49,29 @@ Performance: ~6 GFLOPS (30× over baseline). Memory bandwidth is now the bottlen
 
 The inner loop reloads `C[i][j]` for each k iteration. If we process a small tile of C (say, 6 rows × 16 columns), we can keep the tile in registers and accumulate into it:
 
-```c
-for (int i = 0; i < n; i += 6)
-    for (int k = 0; k < n; k += 1)
-        for (int j = 0; j < n; j += 16) {
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+let mut i = 0;
+while i < n {
+    let mut k = 0;
+    while k < n {
+        let mut j = 0;
+        while j < n {
             // C[i:i+6][j:j+16] += A[i:i+6][k] * B[k][j:j+16]
             // C tile (6×16 = 96 floats) stays in YMM registers
-            for (int ii = 0; ii < 6; ii++) {
-                __m256 vb = _mm256_loadu_ps(&B[k][j]);
-                __m256 aik = _mm256_broadcast_ss(&A[i+ii][k]);
+            for ii in 0..6 {
+                let vb = _mm256_loadu_ps(&B[k][j]);
+                let aik = _mm256_broadcast_ss(&A[i + ii][k]);
                 // FMA: C[ii][j:j+8] += aik * vb (8 floats at once)
             }
+            j += 16;
         }
+        k += 1;
+    }
+    i += 6;
+}
 ```
 
 The key: 6 × 16 = 96 floats = 12 YMM registers for the C tile, 1 register for `vb`, 1 for `aik` broadcast. Zen 2 has 16 YMM registers — it fits. The C tile is loaded once, accumulated into across all k iterations, and stored once at the end.
@@ -65,15 +82,29 @@ Performance: ~18 GFLOPS (90× over baseline). Memory traffic drops to just readi
 
 The i-k-j order means B is streamed sequentially, but A is loaded repeatedly (for each k). If n is large, A doesn't fit in cache and must be reloaded from RAM for each k iteration. Fix: tile in all three dimensions:
 
-```c
-for (int ii = 0; ii < n; ii += BLOCK)
-    for (int kk = 0; kk < n; kk += BLOCK)
-        for (int jj = 0; jj < n; jj += BLOCK)
+```rust
+const BLOCK: usize = 48;
+
+let mut ii = 0;
+while ii < n {
+    let mut kk = 0;
+    while kk < n {
+        let mut jj = 0;
+        while jj < n {
             // Multiply C[ii:ii+B][jj:jj+B] += A[ii:ii+B][kk:kk+B] × B[kk:kk+B][jj:jj+B]
-            for (int i = ii; i < ii + BLOCK; i++)
-                for (int k = kk; k < kk + BLOCK; k++)
-                    for (int j = jj; j < jj + BLOCK; j++)
-                        C[i][j] += A[i][k] * B[k][j];
+            for i in ii..ii + BLOCK {
+                for k in kk..kk + BLOCK {
+                    for j in jj..jj + BLOCK {
+                        c[i][j] += a[i][k] * b[k][j];
+                    }
+                }
+            }
+            jj += BLOCK;
+        }
+        kk += BLOCK;
+    }
+    ii += BLOCK;
+}
 ```
 
 Choose BLOCK so that three BLOCK×BLOCK tiles fit in L1 cache: 3 × BLOCK² × 4 bytes ≤ 32 KB → BLOCK ≈ 52. Use 48 for even divisibility.
@@ -108,19 +139,34 @@ The outer loops over ii and jj are independent — just add `#pragma omp paralle
 
 ## The Complete Code
 
-```c
-#define BLOCK 48
-#define MICRO_H 6
-#define MICRO_W 16
+```rust
+const BLOCK: usize = 48;
+const MICRO_H: usize = 6;
+const MICRO_W: usize = 16;
 
-void matmul(float *C, float *A, float *B, int n) {
-    for (int ii = 0; ii < n; ii += BLOCK)
-        for (int kk = 0; kk < n; kk += BLOCK)
-            for (int jj = 0; jj < n; jj += BLOCK)
+unsafe fn matmul(c: *mut f32, a: *const f32, b: *const f32, n: usize) {
+    let mut ii = 0;
+    while ii < n {
+        let mut kk = 0;
+        while kk < n {
+            let mut jj = 0;
+            while jj < n {
                 // Pack A[ii:ii+B][kk:kk+B] and B[kk:kk+B][jj:jj+B] into aligned buffers
-                for (int i = ii; i < ii + BLOCK; i += MICRO_H)
-                    for (int j = jj; j < jj + BLOCK; j += MICRO_W)
-                        micro_kernel(C, A_packed, B_packed, i, j, kk, BLOCK);
+                let mut i = ii;
+                while i < ii + BLOCK {
+                    let mut j = jj;
+                    while j < jj + BLOCK {
+                        micro_kernel(c, a_packed, b_packed, i, j, kk, BLOCK);
+                        j += MICRO_W;
+                    }
+                    i += MICRO_H;
+                }
+                jj += BLOCK;
+            }
+            kk += BLOCK;
+        }
+        ii += BLOCK;
+    }
 }
 ```
 

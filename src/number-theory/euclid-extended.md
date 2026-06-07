@@ -6,14 +6,14 @@ Euclid's algorithm computes the greatest common divisor of two integers. The **e
 
 The basic insight: `gcd(a, b) = gcd(b, a mod b)`. Iterate until b = 0:
 
-```c
-uint64_t gcd(uint64_t a, uint64_t b) {
-    while (b) {
-        uint64_t t = a % b;
+```rust
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = a % b;
         a = b;
         b = t;
     }
-    return a;
+    a
 }
 ```
 
@@ -30,42 +30,39 @@ b = original_a × b_coeff_a + original_b × b_coeff_b
 
 When b reaches 0, a = gcd, and the coefficients give us the linear combination.
 
-```c
-// Returns gcd(a,b) and sets x, y such that ax + by = gcd(a,b)
-int64_t egcd(int64_t a, int64_t b, int64_t *x, int64_t *y) {
-    if (b == 0) {
-        *x = 1;
-        *y = 0;
-        return a;
+```rust
+// Returns gcd(a,b) and (x,y) such that ax + by = gcd(a,b)
+fn egcd(a: i64, b: i64) -> (i64, i64, i64) {
+    if b == 0 {
+        return (a, 1, 0);
     }
-    int64_t x1, y1;
-    int64_t g = egcd(b, a % b, &x1, &y1);
-    *x = y1;
-    *y = x1 - (a / b) * y1;
-    return g;
+    let (g, x1, y1) = egcd(b, a % b);
+    (g, y1, x1 - (a / b) * y1)
 }
 ```
 
 ## Iterative Version (Faster, No Recursion)
 
-```c
-int64_t modinv(int64_t a, int64_t m) {
-    int64_t t = 0, newt = 1;
-    int64_t r = m, newr = a;
+```rust
+fn modinv(mut a: i64, m: i64) -> i64 {
+    let mut t = 0;
+    let mut newt = 1;
+    let mut r = m;
+    let mut newr = a;
     
-    while (newr != 0) {
-        int64_t q = r / newr;
-        int64_t tmp = t;
+    while newr != 0 {
+        let q = r / newr;
+        let tmp = t;
         t = newt;
         newt = tmp - q * newt;
-        tmp = r;
+        let tmp = r;
         r = newr;
         newr = tmp - q * newr;
     }
     
     // r is now gcd(a, m). If r > 1, no inverse exists.
-    if (t < 0) t += m;
-    return t;  // t is a^(-1) mod m
+    if t < 0 { t += m; }
+    t  // t is a^(-1) mod m
 }
 ```
 
@@ -93,21 +90,22 @@ Extended Euclid is the fastest general-purpose method for modular inverse. Montg
 
 An alternative to Euclid's algorithm that uses only subtraction and shifting (no division):
 
-```c
-uint64_t binary_gcd(uint64_t a, uint64_t b) {
-    if (a == 0) return b;
-    if (b == 0) return a;
+```rust
+fn binary_gcd(mut a: u64, mut b: u64) -> u64 {
+    if a == 0 { return b; }
+    if b == 0 { return a; }
     
-    int shift = __builtin_ctzll(a | b);  // Common powers of 2
-    a >>= __builtin_ctzll(a);
+    let shift = (a | b).trailing_zeros();  // Common powers of 2
+    a >>= a.trailing_zeros();
     
-    do {
-        b >>= __builtin_ctzll(b);
-        if (a > b) { uint64_t t = a; a = b; b = t; }
+    loop {
+        b >>= b.trailing_zeros();
+        if a > b { std::mem::swap(&mut a, &mut b); }
         b -= a;
-    } while (b != 0);
+        if b == 0 { break; }
+    }
     
-    return a << shift;
+    a << shift
 }
 ```
 

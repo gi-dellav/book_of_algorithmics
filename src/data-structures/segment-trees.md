@@ -13,44 +13,63 @@ A naive array answers Query in O(n) and Update in O(1). A prefix sum array answe
 
 ## Stage 1: Pointer-Based Recursive Segment Tree
 
-```c
+```rust
+use std::alloc::{alloc, dealloc, Layout};
+
+#[repr(C)]
 struct SegNode {
-    int lo, hi;          // Range this node covers
-    int val;             // Aggregate over [lo, hi)
-    SegNode *left, *right;
-};
+    lo: usize,
+    hi: usize,
+    val: i32,
+    left: *mut SegNode,
+    right: *mut SegNode,
+}
 
-SegNode *build(int *a, int lo, int hi) {
-    SegNode *node = malloc(sizeof(SegNode));
-    node->lo = lo; node->hi = hi;
-    if (hi - lo == 1) {
-        node->val = a[lo];
-        node->left = node->right = NULL;
-    } else {
-        int mid = lo + (hi - lo) / 2;
-        node->left = build(a, lo, mid);
-        node->right = build(a, mid, hi);
-        node->val = node->left->val + node->right->val;
+fn build(a: *const i32, lo: usize, hi: usize) -> *mut SegNode {
+    unsafe {
+        let layout = Layout::new::<SegNode>();
+        let node = alloc(layout) as *mut SegNode;
+        (*node).lo = lo;
+        (*node).hi = hi;
+        if hi - lo == 1 {
+            (*node).val = *a.add(lo);
+            (*node).left = std::ptr::null_mut();
+            (*node).right = std::ptr::null_mut();
+        } else {
+            let mid = lo + (hi - lo) / 2;
+            (*node).left = build(a, lo, mid);
+            (*node).right = build(a, mid, hi);
+            (*node).val = (*(*node).left).val + (*(*node).right).val;
+        }
+        node
     }
-    return node;
 }
 
-int query(SegNode *node, int ql, int qr) {
-    if (ql <= node->lo && node->hi <= qr)  // Fully covered
-        return node->val;
-    if (qr <= node->lo || node->hi <= ql)  // No overlap
-        return 0;  // Identity for sum
-    return query(node->left, ql, qr) + query(node->right, ql, qr);
+fn query(node: *const SegNode, ql: usize, qr: usize) -> i32 {
+    unsafe {
+        if ql <= (*node).lo && (*node).hi <= qr {
+            return (*node).val;
+        }
+        if qr <= (*node).lo || (*node).hi <= ql {
+            return 0;
+        }
+        query((*node).left, ql, qr) + query((*node).right, ql, qr)
+    }
 }
 
-void update(SegNode *node, int idx, int val) {
-    if (node->hi - node->lo == 1) {
-        node->val = val;
-    } else {
-        int mid = node->lo + (node->hi - node->lo) / 2;
-        if (idx < mid) update(node->left, idx, val);
-        else           update(node->right, idx, val);
-        node->val = node->left->val + node->right->val;
+fn update(node: *mut SegNode, idx: usize, val: i32) {
+    unsafe {
+        if (*node).hi - (*node).lo == 1 {
+            (*node).val = val;
+        } else {
+            let mid = (*node).lo + ((*node).hi - (*node).lo) / 2;
+            if idx < mid {
+                update((*node).left, idx, val);
+            } else {
+                update((*node).right, idx, val);
+            }
+            (*node).val = (*(*node).left).val + (*(*node).right).val;
+        }
     }
 }
 ```
@@ -66,31 +85,51 @@ Performance (Zen 2, n = 100K, random sum queries on [0, n)): ~850ns per query. T
 
 Store the tree in a flat array, like a binary heap. Index 1 is the root; children of index `i` are `2i` and `2i+1`.
 
-```c
-int tree[4 * MAXN];  // Worst-case size for an implicit segment tree
+```rust
+const MAXN: usize = 100000;
+static mut TREE: [i32; 4 * MAXN] = [0; 4 * MAXN];
 
-void build_implicit(int *a, int n) {
-    // Copy a[] to the leaves
-    for (int i = 0; i < n; i++)
-        tree[n + i] = a[i];  // Leaves start at index n
-    // Build internal nodes bottom-up
-    for (int i = n - 1; i > 0; i--)
-        tree[i] = tree[2*i] + tree[2*i+1];
-}
-
-int query_implicit(int n, int l, int r) {
-    int res = 0;
-    for (l += n, r += n; l < r; l >>= 1, r >>= 1) {
-        if (l & 1) res += tree[l++];  // l is a right child → include it
-        if (r & 1) res += tree[--r];  // r is a right child → include r-1 (left child)
+fn build_implicit(a: *const i32, n: usize) {
+    unsafe {
+        for i in 0..n {
+            TREE[n + i] = *a.add(i);
+        }
+        for i in (1..n).rev() {
+            TREE[i] = TREE[2 * i] + TREE[2 * i + 1];
+        }
     }
-    return res;
 }
 
-void update_implicit(int n, int idx, int val) {
-    tree[n + idx] = val;
-    for (int i = (n + idx) / 2; i > 0; i /= 2)
-        tree[i] = tree[2*i] + tree[2*i+1];
+fn query_implicit(n: usize, mut l: usize, mut r: usize) -> i32 {
+    unsafe {
+        l += n;
+        r += n;
+        let mut res = 0;
+        while l < r {
+            if l & 1 != 0 {
+                res += TREE[l];
+                l += 1;
+            }
+            if r & 1 != 0 {
+                r -= 1;
+                res += TREE[r];
+            }
+            l >>= 1;
+            r >>= 1;
+        }
+        res
+    }
+}
+
+fn update_implicit(n: usize, idx: usize, val: i32) {
+    unsafe {
+        TREE[n + idx] = val;
+        let mut i = (n + idx) / 2;
+        while i > 0 {
+            TREE[i] = TREE[2 * i] + TREE[2 * i + 1];
+            i /= 2;
+        }
+    }
 }
 ```
 
@@ -105,15 +144,32 @@ The remaining overhead: the loop does O(log n) iterations with unpredictable bra
 
 The `if (l & 1)` and `if (r & 1)` branches can be eliminated with conditional moves:
 
-```c
-int query_branchless(int n, int l, int r) {
-    int res = 0;
-    for (l += n, r += n; l < r; l >>= 1, r >>= 1) {
-        int add_l = (l & 1) ? tree[l++] : 0;
-        int add_r = (r & 1) ? tree[--r] : 0;
-        res += add_l + add_r;
+```rust
+fn query_branchless(n: usize, mut l: usize, mut r: usize) -> i32 {
+    unsafe {
+        l += n;
+        r += n;
+        let mut res = 0;
+        while l < r {
+            let add_l = if l & 1 != 0 {
+                let val = TREE[l];
+                l += 1;
+                val
+            } else {
+                0
+            };
+            let add_r = if r & 1 != 0 {
+                r -= 1;
+                TREE[r]
+            } else {
+                0
+            };
+            res += add_l + add_r;
+            l >>= 1;
+            r >>= 1;
+        }
+        res
     }
-    return res;
 }
 ```
 
@@ -125,23 +181,32 @@ Performance: ~120ns per query (~7× faster than pointer-based). The branch mispr
 
 For **prefix sum** queries (l = 0), the Fenwick tree is even simpler and faster:
 
-```c
-int fenwick[MAXN];
+```rust
+static mut FENWICK: [i32; MAXN] = [0; MAXN];
 
-void fenwick_add(int n, int idx, int delta) {
-    for (idx++; idx <= n; idx += idx & -idx)
-        fenwick[idx - 1] += delta;  // 0-indexed variant
+fn fenwick_add(n: usize, mut idx: usize, delta: i32) {
+    unsafe {
+        idx += 1;
+        while idx <= n {
+            FENWICK[idx - 1] += delta;
+            idx += idx & idx.wrapping_neg();
+        }
+    }
 }
 
-int fenwick_sum(int n, int idx) {  // Sum of a[0..idx)
-    int res = 0;
-    for (; idx > 0; idx -= idx & -idx)
-        res += fenwick[idx - 1];
-    return res;
+fn fenwick_sum(n: usize, mut idx: usize) -> i32 {
+    unsafe {
+        let mut res = 0;
+        while idx > 0 {
+            res += FENWICK[idx - 1];
+            idx -= idx & idx.wrapping_neg();
+        }
+        res
+    }
 }
 
-int fenwick_range(int n, int l, int r) {
-    return fenwick_sum(n, r) - fenwick_sum(n, l);
+fn fenwick_range(n: usize, l: usize, r: usize) -> i32 {
+    fenwick_sum(n, r) - fenwick_sum(n, l)
 }
 ```
 
@@ -161,95 +226,106 @@ The fix: add "holes" to the Fenwick tree to shift the alignment. Instead of stor
 
 Why stop at binary? A B-ary segment tree stores B children per node, reducing height from log₂(n) to log_B(n). For B = 16: height drops from ~17 to ~3.
 
-```c
-#define B 16
+```rust
+const B: usize = 16;
+static mut WIDE_TREE: [i32; 4 * MAXN] = [0; 4 * MAXN];
 
-int wide_tree[4 * MAXN];  // Still 1-indexed, but B-ary
+fn build_wide(a: *const i32, n: usize) {
+    unsafe {
+        let mut padded: usize = 1;
+        while padded < n {
+            padded *= B;
+        }
 
-void build_wide(int *a, int n) {
-    // Pad n to a power of B
-    int padded = 1;
-    while (padded < n) padded *= B;
-    
-    // Place leaves
-    for (int i = 0; i < n; i++)
-        wide_tree[padded + i] = a[i];
-    for (int i = n; i < padded; i++)
-        wide_tree[padded + i] = 0;  // Identity
-    
-    // Build bottom-up: each parent is the sum of its B children
-    for (int i = padded - 1; i > 0; i--)
-        wide_tree[i] = wide_tree[B*i] + wide_tree[B*i+1] + ... + wide_tree[B*i+B-1];
+        for i in 0..n {
+            WIDE_TREE[padded + i] = *a.add(i);
+        }
+        for i in n..padded {
+            WIDE_TREE[padded + i] = 0;
+        }
+
+        for i in (1..padded).rev() {
+            let mut sum = 0;
+            for j in 0..B {
+                sum += WIDE_TREE[B * i + j];
+            }
+            WIDE_TREE[i] = sum;
+        }
+    }
 }
 
-int query_wide(int padded, int l, int r) {
-    int res = 0;
-    l += padded; r += padded;
-    
-    while (l < r) {
-        // Find the largest aligned block covering part of [l, r)
-        // This is more complex than binary...
-        // For each level, check if l is at a block boundary
-        int block_start = l;
-        while (l % B != 0 && l < r) {
-            res += wide_tree[l++];
+fn query_wide(padded: usize, mut l: usize, mut r: usize) -> i32 {
+    unsafe {
+        l += padded;
+        r += padded;
+        let mut res = 0;
+
+        while l < r {
+            while l % B != 0 && l < r {
+                res += WIDE_TREE[l];
+                l += 1;
+            }
+            while r % B != 0 && l < r {
+                r -= 1;
+                res += WIDE_TREE[r];
+            }
+            l /= B;
+            r /= B;
         }
-        while (r % B != 0 && l < r) {
-            res += wide_tree[--r];
-        }
-        l /= B; r /= B;
+        res
     }
-    return res;
 }
 ```
 
 The wide segment tree is trickier to query than binary because blocks don't align nicely with arbitrary ranges. The query must process partial blocks at the edges and whole blocks in the middle. But with SIMD, processing a partial block of up to B elements can be done with a single vector load + mask:
 
-```c
-int query_wide_simd(int padded, int l, int r) {
-    int res = 0;
-    l += padded; r += padded;
-    
-    while (l < r) {
-        // Partial block at the left edge
-        if (l % B != 0) {
-            int block = l / B;
-            int offset = l % B;
-            int count = (B - offset < r - l) ? B - offset : r - l;
-            
-            // Load the block, mask off elements before 'offset' and after 'count'
-            __m512i v = _mm512_loadu_si512(&wide_tree[block * B]);
-            __mmask16 mask = (1 << count) - 1;
-            mask <<= offset;
-            __m512i masked = _mm512_maskz_mov_epi32(mask, v);
-            res += _mm512_reduce_add_epi32(masked);  // Horizontal sum
-            
-            l += count;
-            continue;
+```rust
+use std::arch::x86_64::*;
+
+fn query_wide_simd(padded: usize, mut l: usize, mut r: usize) -> i32 {
+    unsafe {
+        l += padded;
+        r += padded;
+        let mut res = 0;
+
+        while l < r {
+            if l % B != 0 {
+                let block = l / B;
+                let offset = l % B;
+                let count = if B - offset < r - l { B - offset } else { r - l };
+
+                let v = _mm512_loadu_si512(WIDE_TREE.as_ptr().add(block * B) as *const __m512i);
+                let mut mask: u16 = (1u16 << count) - 1;
+                mask <<= offset;
+                let masked = _mm512_maskz_mov_epi32(mask, v);
+                res += _mm512_reduce_add_epi32(masked);
+
+                l += count;
+                continue;
+            }
+
+            if l + B <= r {
+                let v = _mm512_loadu_si512(WIDE_TREE.as_ptr().add(l) as *const __m512i);
+                res += _mm512_reduce_add_epi32(v);
+                l += B;
+                continue;
+            }
+
+            if r % B != 0 && l < r {
+                let block = r / B;
+                let count = r % B;
+                let v = _mm512_loadu_si512(WIDE_TREE.as_ptr().add(block * B) as *const __m512i);
+                let mask: u16 = (1u16 << count) - 1;
+                let masked = _mm512_maskz_mov_epi32(mask, v);
+                res += _mm512_reduce_add_epi32(masked);
+                break;
+            }
+
+            l /= B;
+            r /= B;
         }
-        
-        // Full block
-        if (l + B <= r) {
-            __m512i v = _mm512_loadu_si512(&wide_tree[l]);
-            res += _mm512_reduce_add_epi32(v);
-            l += B;
-            continue;
-        }
-        
-        // Partial block at the right edge
-        if (r % B != 0 && l < r) {
-            int block = r / B;
-            int count = r % B;
-            __m512i v = _mm512_loadu_si512(&wide_tree[block * B]);
-            __mmask16 mask = (1 << count) - 1;
-            __m512i masked = _mm512_maskz_mov_epi32(mask, v);
-            res += _mm512_reduce_add_epi32(masked);
-            break;
-        }
-        
-        l /= B; r /= B;
+        res
     }
-    return res;
 }
 ```
 
@@ -261,34 +337,43 @@ Sum is a **reversible** operation: you can compute range sum as `prefix[r] - pre
 
 Also, range updates (add X to all elements in [l, r)) require **lazy propagation**: mark a node as "dirty" with a pending update, and only propagate it when the node is queried:
 
-```c
-int tree[4*MAXN], lazy[4*MAXN];
+```rust
+static mut TREE: [i32; 4 * MAXN] = [0; 4 * MAXN];
+static mut LAZY: [i32; 4 * MAXN] = [0; 4 * MAXN];
 
-void apply(int idx, int val, int len) {
-    tree[idx] += val * len;  // For sum; for min: tree[idx] += val
-    lazy[idx] += val;
-}
-
-void push(int idx, int lo, int hi) {
-    if (lazy[idx] != 0) {
-        int mid = lo + (hi - lo) / 2;
-        apply(2*idx, lazy[idx], mid - lo);
-        apply(2*idx+1, lazy[idx], hi - mid);
-        lazy[idx] = 0;
+fn apply(idx: usize, val: i32, len: usize) {
+    unsafe {
+        TREE[idx] += val * len as i32;
+        LAZY[idx] += val;
     }
 }
 
-void range_add(int idx, int lo, int hi, int ql, int qr, int val) {
-    if (ql <= lo && hi <= qr) {
+fn push(idx: usize, lo: usize, hi: usize) {
+    unsafe {
+        if LAZY[idx] != 0 {
+            let mid = lo + (hi - lo) / 2;
+            apply(2 * idx, LAZY[idx], mid - lo);
+            apply(2 * idx + 1, LAZY[idx], hi - mid);
+            LAZY[idx] = 0;
+        }
+    }
+}
+
+fn range_add(idx: usize, lo: usize, hi: usize, ql: usize, qr: usize, val: i32) {
+    if ql <= lo && hi <= qr {
         apply(idx, val, hi - lo);
         return;
     }
-    if (qr <= lo || hi <= ql) return;
+    if qr <= lo || hi <= ql {
+        return;
+    }
     push(idx, lo, hi);
-    int mid = lo + (hi - lo) / 2;
-    range_add(2*idx, lo, mid, ql, qr, val);
-    range_add(2*idx+1, mid, hi, ql, qr, val);
-    tree[idx] = tree[2*idx] + tree[2*idx+1];
+    let mid = lo + (hi - lo) / 2;
+    range_add(2 * idx, lo, mid, ql, qr, val);
+    range_add(2 * idx + 1, mid, hi, ql, qr, val);
+    unsafe {
+        TREE[idx] = TREE[2 * idx] + TREE[2 * idx + 1];
+    }
 }
 ```
 

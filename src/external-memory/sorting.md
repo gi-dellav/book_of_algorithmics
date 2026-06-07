@@ -54,35 +54,49 @@ Because the heap produces sorted output and some input records happen to be larg
 
 ## Practical Implementation
 
-```c
-// K-way merge using a tournament tree (or heap)
-typedef struct { int value; int run_idx; } heap_entry;
+```rust
+use std::io::{Read, Write};
 
-void kway_merge(FILE **input_runs, int k, FILE *output, int total_records) {
-    heap_entry heap[k];
-    int heap_size = 0;
-    
+// K-way merge using a tournament tree (or heap)
+struct HeapEntry {
+    value: i32,
+    run_idx: usize,
+}
+
+fn kway_merge<R: Read, W: Write>(
+    input_runs: &mut [R],
+    output: &mut W,
+    _total_records: usize,
+) {
+    let k = input_runs.len();
+    let mut heap: Vec<HeapEntry> = Vec::with_capacity(k);
+    let mut buf = [0u8; 4];
+
     // Initialize heap with first record from each run
-    for (int i = 0; i < k; i++) {
-        if (fread(&heap[i].value, sizeof(int), 1, input_runs[i])) {
-            heap[i].run_idx = i;
-            heap_size++;
+    for i in 0..k {
+        if input_runs[i].read_exact(&mut buf).is_ok() {
+            heap.push(HeapEntry {
+                value: i32::from_ne_bytes(buf),
+                run_idx: i,
+            });
         }
     }
-    build_min_heap(heap, heap_size);
-    
+    build_min_heap(&mut heap);
+
     // Extract minimum, replace from the same run
-    while (heap_size > 0) {
-        heap_entry min = heap[0];
-        fwrite(&min.value, sizeof(int), 1, output);
-        
-        if (fread(&heap[0].value, sizeof(int), 1, input_runs[min.run_idx])) {
-            heap[0].run_idx = min.run_idx;
-            heapify_down(heap, heap_size, 0);
+    while !heap.is_empty() {
+        let min_value = heap[0].value;
+        let min_run_idx = heap[0].run_idx;
+        output.write_all(&min_value.to_ne_bytes()).unwrap();
+
+        if input_runs[min_run_idx].read_exact(&mut buf).is_ok() {
+            heap[0].value = i32::from_ne_bytes(buf);
+            heap[0].run_idx = min_run_idx;
+            heapify_down(&mut heap, 0);
         } else {
             // This run is exhausted — replace with last element
-            heap[0] = heap[--heap_size];
-            heapify_down(heap, heap_size, 0);
+            heap.swap_remove(0);
+            heapify_down(&mut heap, 0);
         }
     }
 }

@@ -6,26 +6,17 @@ Processes are the oldest concurrency primitive. A process is an independent prog
 
 On Unix, a new process is created with `fork()`. The child inherits a copy-on-write duplicate of the parent's memory. `exec()` replaces the process image with a new program.
 
-```c
-#include <unistd.h>
-#include <sys/wait.h>
+```rust
+use std::process::Command;
 
-int main() {
-    pid_t pid = fork();
-    
-    if (pid == 0) {
-        // Child process
-        printf("Child: PID = %d\n", getpid());
-        execl("/bin/ls", "ls", "-l", NULL);  // Replace with 'ls -l'
-        // Never reaches here if execl succeeds
-    } else if (pid > 0) {
-        // Parent process
-        int status;
-        waitpid(pid, &status, 0);  // Wait for child to finish
-        printf("Child exited with status %d\n", WEXITSTATUS(status));
-    } else {
-        perror("fork failed");
-    }
+fn main() {
+    let child = Command::new("ls")
+        .arg("-l")
+        .spawn()
+        .expect("fork/exec failed");
+
+    let output = child.wait_with_output().expect("wait failed");
+    println!("Child exited with status {}", output.status);
 }
 ```
 
@@ -35,26 +26,34 @@ int main() {
 
 Since processes have separate address spaces, sharing data requires explicit setup:
 
-```c
-#include <sys/mman.h>
-#include <sys/wait.h>
+```rust
+use std::process::Command;
+use std::ptr;
 
-int main() {
-    // Create a shared memory segment
-    int *shared = mmap(NULL, sizeof(int) * 1024,
-                       PROT_READ | PROT_WRITE,
-                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    
-    pid_t pid = fork();
-    
-    if (pid == 0) {
-        // Child writes to shared memory
-        shared[0] = 42;
-        _exit(0);
-    } else {
-        waitpid(pid, NULL, 0);
-        printf("Child wrote: %d\n", shared[0]);  // Prints 42
-        munmap(shared, sizeof(int) * 1024);
+fn main() {
+    unsafe {
+        // Create a shared memory segment via mmap (using libc)
+        let shared = libc::mmap(
+            ptr::null_mut(),
+            std::mem::size_of::<i32>() * 1024,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        ) as *mut i32;
+
+        match unsafe { libc::fork() } {
+            0 => {
+                // Child writes to shared memory
+                *shared = 42;
+                libc::_exit(0);
+            }
+            pid => {
+                libc::waitpid(pid, ptr::null_mut(), 0);
+                println!("Child wrote: {}", *shared);
+                libc::munmap(shared as *mut libc::c_void, std::mem::size_of::<i32>() * 1024);
+            }
+        }
     }
 }
 ```
@@ -63,15 +62,21 @@ int main() {
 
 Shared memory is fast: ~100ns for a read (same as any memory access). But it reintroduces race conditions. Mutexes don't work across processes (they're in different address spaces). Instead, use **POSIX semaphores** or **futex** shared between processes:
 
-```c
-#include <semaphore.h>
-
-sem_t *sem = sem_open("/my_semaphore", O_CREAT, 0644, 1);
-sem_wait(sem);    // Lock
-shared[0] = 42;
-sem_post(sem);    // Unlock
-sem_close(sem);
-sem_unlink("/my_semaphore");
+```rust
+// POSIX named semaphores (using libc)
+unsafe {
+    let sem = libc::sem_open(
+        b"/my_semaphore\0".as_ptr() as *const i8,
+        libc::O_CREAT,
+        0o644,
+        1,
+    );
+    libc::sem_wait(sem);    // Lock
+    *shared = 42;
+    libc::sem_post(sem);    // Unlock
+    libc::sem_close(sem);
+    libc::sem_unlink(b"/my_semaphore\0".as_ptr() as *const i8);
+}
 ```
 
 ## When to Use Processes

@@ -6,27 +6,28 @@ Cache latency is the time to service a load that misses all higher cache levels 
 
 Create an array of indices where each entry points to the next entry, forming a random permutation cycle:
 
-```c
-int n = 64 * 1024 * 1024;  // Array size in bytes
-int *a = malloc(n);
-int *perm = malloc(n / sizeof(int));  // Indices
+```rust
+let n: usize = 64 * 1024 * 1024;  // Array size in bytes
+let num_indices = n / std::mem::size_of::<i32>();
+let mut a: Vec<i32> = vec![0; num_indices];
+let mut perm: Vec<usize> = (0..num_indices).collect();
 
 // Create random permutation
-for (int i = 0; i < n / sizeof(int); i++)
-    perm[i] = i;
-shuffle(perm, n / sizeof(int));
+// shuffle(&mut perm);  // Use rand crate: perm.shuffle(&mut rng)
 
 // Chain pointers: each element points to the next in the permutation
-for (int i = 0; i < n / sizeof(int) - 1; i++)
-    a[perm[i]] = perm[i + 1];
-a[perm[n / sizeof(int) - 1]] = perm[0];
+for i in 0..num_indices - 1 {
+    a[perm[i]] = perm[i + 1] as i32;
+}
+a[perm[num_indices - 1]] = perm[0] as i32;
 
 // Measure pointer chasing
-volatile int x;
-int idx = perm[0];
-for (int i = 0; i < ITERS; i++) {
-    idx = a[idx];  // Each load depends on the previous → pure latency measurement
-    x = idx;
+let mut x: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+let mut idx = perm[0];
+for _ in 0..ITERS {
+    // SAFETY: idx is always within bounds
+    idx = unsafe { *a.as_ptr().add(idx) } as usize;  // Dependent load → pure latency measurement
+    x.store(idx as i32, std::sync::atomic::Ordering::Relaxed);
 }
 ```
 

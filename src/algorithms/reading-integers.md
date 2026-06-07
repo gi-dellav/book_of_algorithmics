@@ -4,8 +4,8 @@ Converting a string like "12345" to an integer is one of the most common operati
 
 ## The Problem
 
-```c
-int parse_int(const char *str, int len);  // "12345" → 12345
+```rust
+fn parse_int(str: &[u8]) -> i32;  // "12345" → 12345
 ```
 
 Millions of calls per second in data pipelines. Every cycle matters.
@@ -24,13 +24,13 @@ For most use cases, we know the format: unsigned, base 10, no whitespace, no sig
 
 ## Stage 1: Scalar Accumulation
 
-```c
-uint64_t parse_uint64_scalar(const char *str, int len) {
-    uint64_t value = 0;
-    for (int i = 0; i < len; i++) {
-        value = value * 10 + (str[i] - '0');
+```rust
+fn parse_uint64_scalar(str: &[u8]) -> u64 {
+    let mut value: u64 = 0;
+    for &b in str {
+        value = value * 10 + (b - b'0') as u64;
     }
-    return value;
+    value
 }
 ```
 
@@ -40,20 +40,19 @@ uint64_t parse_uint64_scalar(const char *str, int len) {
 
 Process 8 bytes per iteration using 64-bit integer operations:
 
-```c
-uint64_t parse_uint64_swar(const char *str, int len) {
-    uint64_t value = 0;
-    int i = 0;
+```rust
+unsafe fn parse_uint64_swar(str: *const u8, len: usize) -> u64 {
+    let mut value: u64 = 0;
+    let mut i: usize = 0;
     
-    for (; i + 8 <= len; i += 8) {
-        uint64_t chunk;
-        memcpy(&chunk, str + i, 8);  // Load 8 bytes
+    while i + 8 <= len {
+        let chunk = std::ptr::read_unaligned(str.add(i) as *const u64);  // Load 8 bytes
         
         // Check that all bytes are digits ('0'–'9'):
-        uint64_t t1 = chunk + 0x4646464646464646ull;  // Convert digit range
-        uint64_t t2 = chunk - 0x3030303030303030ull;  // ASCII shift
-        uint64_t t3 = (chunk | 0x3030303030303030ull) - 0x3030303030303030ull;
-        if ((t1 | t2) & 0x8080808080808080ull) {
+        let t1 = chunk + 0x4646464646464646u64;  // Convert digit range
+        let t2 = chunk - 0x3030303030303030u64;  // ASCII shift
+        let t3 = (chunk | 0x3030303030303030u64) - 0x3030303030303030u64;
+        if (t1 | t2) & 0x8080808080808080u64 != 0 {
             // Non-digit byte detected — fall back to scalar
             break;
         }
@@ -65,13 +64,16 @@ uint64_t parse_uint64_swar(const char *str, int len) {
         //   But calculated with SIMD-like techniques
         ...
         value = value * 100000000 + chunk_value;
+        i += 8;
     }
     
     // Handle remaining bytes with scalar
-    for (; i < len; i++)
-        value = value * 10 + (str[i] - '0');
+    while i < len {
+        value = value * 10 + (*str.add(i) - b'0') as u64;
+        i += 1;
+    }
     
-    return value;
+    value
 }
 ```
 
@@ -81,16 +83,19 @@ The SWAR digit validation is the same zero-detection trick from `arithmetic/bit-
 
 AVX-512 can process 32 bytes at once:
 
-```c
-__m512i parse_32_digits(const char *str) {
-    __m512i chunk = _mm512_loadu_si512((__m512i*)str);
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+unsafe fn parse_32_digits(str: *const u8) -> __m512i {
+    let chunk = _mm512_loadu_si512(str as *const __m512i);
     
     // Convert ASCII to digits: subtract '0' (0x30)
-    __m512i digits = _mm512_sub_epi8(chunk, _mm512_set1_epi8('0'));
+    let digits = _mm512_sub_epi8(chunk, _mm512_set1_epi8(b'0' as i8));
     
     // Validate: ensure all bytes are < 10 (i.e., they were digits)
-    __mmask64 mask = _mm512_cmple_epu8_mask(digits, _mm512_set1_epi8(9));
-    if (mask != ~0ull) {
+    let mask = _mm512_cmple_epu8_mask(digits, _mm512_set1_epi8(9));
+    if mask != !0u64 {
         // Handle non-digit bytes
     }
     
@@ -115,37 +120,36 @@ Combining all techniques (Lemire's algorithm, circa 2020):
 4. **AVX-512**: For machines with AVX-512, use 32-byte loads and the mask registers for validation.
 5. **Overflow detection**: The final multiplication `value * 100000000` can overflow — check before multiplying.
 
-```c
-bool parse_uint64_fast(const char *str, int len, uint64_t *out) {
-    uint64_t value = 0;
-    int i = 0;
+```rust
+unsafe fn parse_uint64_fast(str: *const u8, len: usize, out: *mut u64) -> bool {
+    let mut value: u64 = 0;
+    let mut i: usize = 0;
     
-    while (i + 8 <= len) {
-        uint64_t chunk;
-        memcpy(&chunk, str + i, 8);
+    while i + 8 <= len {
+        let chunk = std::ptr::read_unaligned(str.add(i) as *const u64);
         
         // Validate digits
-        if (!is_8_digits(chunk)) return false;
+        if !is_8_digits(chunk) { return false; }
         
         // Parse 8 digits
-        uint32_t chunk_val = parse_8_digits(chunk);
+        let chunk_val = parse_8_digits(chunk);
         
         // Check overflow before accumulating
-        if (value > UINT64_MAX / 100000000) return false;
-        value = value * 100000000 + chunk_val;
+        if value > u64::MAX / 100000000 { return false; }
+        value = value * 100000000 + chunk_val as u64;
         i += 8;
     }
     
     // Parse final chunk (1–7 digits)
-    while (i < len) {
-        if (str[i] < '0' || str[i] > '9') return false;
-        if (value > (UINT64_MAX - (str[i] - '0')) / 10) return false;
-        value = value * 10 + (str[i] - '0');
-        i++;
+    while i < len {
+        if *str.add(i) < b'0' || *str.add(i) > b'9' { return false; }
+        if value > (u64::MAX - (*str.add(i) - b'0') as u64) / 10 { return false; }
+        value = value * 10 + (*str.add(i) - b'0') as u64;
+        i += 1;
     }
     
     *out = value;
-    return true;
+    true
 }
 ```
 

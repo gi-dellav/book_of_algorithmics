@@ -6,14 +6,18 @@ Memory ordering is the most subtle aspect of parallel programming. The question:
 
 CPUs reorder memory operations for performance. A store to memory takes ~200 cycles (if it misses cache). While that store is in flight, the CPU continues executing independent instructions — including loads and stores that appear *after* the pending store in program order.
 
-```c
+```rust
+static mut X: i32 = 0;
+static mut Y: i32 = 0;
+
 // Thread A
-x = 1;
-y = 1;
+unsafe { X = 1; Y = 1; }
 
 // Thread B
-int r1 = y;
-int r2 = x;
+unsafe {
+    let r1 = Y;
+    let r2 = X;
+}
 ```
 
 What values can `(r1, r2)` have? In a sequentially consistent world: `(0,0)`, `(1,0)`, `(0,1)`, or `(1,1)`. But on real hardware, `(0,0)` is also possible — Thread B can see `y = 1` before seeing `x = 1`, even though Thread A wrote `x` first. The CPU reordered Thread A's stores, or Thread B's loads, or both.
@@ -26,16 +30,19 @@ C11 and C++11 define six memory orderings, from weakest to strongest:
 
 No ordering guarantees. Only atomicity is guaranteed. The compiler and CPU may reorder this operation freely with respect to other memory operations.
 
-```c
-atomic_int x = 0, y = 0;
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static X: AtomicI32 = AtomicI32::new(0);
+static Y: AtomicI32 = AtomicI32::new(0);
 
 // Thread A
-atomic_store_explicit(&x, 1, memory_order_relaxed);
-atomic_store_explicit(&y, 1, memory_order_relaxed);
+X.store(1, Ordering::Relaxed);
+Y.store(1, Ordering::Relaxed);
 
 // Thread B
-int r1 = atomic_load_explicit(&y, memory_order_relaxed);
-int r2 = atomic_load_explicit(&x, memory_order_relaxed);
+let r1 = Y.load(Ordering::Relaxed);
+let r2 = X.load(Ordering::Relaxed);
 // (r1, r2) = (1, 0) is possible — Thread B saw y=1 but x=0
 ```
 
@@ -49,18 +56,21 @@ Use case: counters where only the total sum matters, not the order of individual
 
 Together, acquire-release creates a **happens-before** relationship: if Thread A does a release-store on `x`, and Thread B does an acquire-load on `x` that reads Thread A's stored value, then all writes Thread A did before the release are visible to Thread B after the acquire.
 
-```c
-atomic_int ready = 0;
-int data = 0;  // NOT atomic
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static READY: AtomicI32 = AtomicI32::new(0);
+static mut DATA: i32 = 0;  // NOT atomic
 
 // Thread A
-data = 42;
-atomic_store_explicit(&ready, 1, memory_order_release);  // Release: data = 42 is visible
+unsafe { DATA = 42; }
+READY.store(1, Ordering::Release);  // Release: data = 42 is visible
 
 // Thread B
-while (atomic_load_explicit(&ready, memory_order_acquire) == 0)
-    ;  // Spin until ready
-int r = data;  // Guaranteed: r == 42
+while READY.load(Ordering::Acquire) == 0 {
+    // Spin until ready
+}
+let r = unsafe { DATA };  // Guaranteed: r == 42
 ```
 
 This is the standard pattern for passing data between threads. The release on `ready` ensures `data = 42` is visible before `ready = 1`. The acquire on `ready` ensures `data` is read after `ready == 1`.
@@ -69,11 +79,16 @@ This is the standard pattern for passing data between threads. The release on `r
 
 Combines acquire and release. Used for read-modify-write operations (`fetch_add`, `CAS`) where the operation both reads (acquire) and writes (release).
 
-```c
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+
 // Lock-free flag
-int expected = 0;
-if (atomic_compare_exchange_strong_explicit(&flag, &expected, 1,
-        memory_order_acq_rel, memory_order_acquire)) {
+static FLAG: AtomicI32 = AtomicI32::new(0);
+
+let expected = 0;
+if FLAG.compare_exchange(
+    expected, 1, Ordering::AcqRel, Ordering::Acquire
+).is_ok() {
     // We acquired the flag. All writes from the previous holder are visible.
 }
 ```
@@ -82,12 +97,15 @@ if (atomic_compare_exchange_strong_explicit(&flag, &expected, 1,
 
 The strongest ordering. All seq_cst operations appear to execute in a single total order visible to all threads. This is the default for all C11/C++11 atomics without explicit ordering.
 
-```c
-atomic_int x = 0, y = 0;
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static X: AtomicI32 = AtomicI32::new(0);
+static Y: AtomicI32 = AtomicI32::new(0);
 
 // Thread A                            // Thread B
-atomic_store(&x, 1);                   atomic_store(&y, 1);
-int r1 = atomic_load(&y);              int r2 = atomic_load(&x);
+X.store(1, Ordering::SeqCst);           Y.store(1, Ordering::SeqCst);
+let r1 = Y.load(Ordering::SeqCst);      let r2 = X.load(Ordering::SeqCst);
 ```
 
 With seq_cst: `(r1, r2) = (0, 0)` is IMPOSSIBLE. There is a total order of stores and loads. Either Thread A's store to x happens before Thread B's load, or Thread B's store to y happens before Thread A's load, or both.
@@ -111,13 +129,17 @@ On ARM (weak memory model), acquire and release are NOT free — they require ex
 
 ## Dekker's Example on x86
 
-```c
-atomic_int x = 0, y = 0;
-int r1, r2;
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static X: AtomicI32 = AtomicI32::new(0);
+static Y: AtomicI32 = AtomicI32::new(0);
+static mut R1: i32 = 0;
+static mut R2: i32 = 0;
 
 // Thread A                  // Thread B
-x = 1;                       y = 1;
-r1 = y;                      r2 = x;
+X.store(1, Ordering::Relaxed);    Y.store(1, Ordering::Relaxed);
+unsafe { R1 = Y.load(Ordering::Relaxed); }  unsafe { R2 = X.load(Ordering::Relaxed); }
 ```
 
 Can `(r1, r2) = (0, 0)` happen on x86? Yes! Even with the strong x86 memory model. The stores `x = 1` and `y = 1` sit in the store buffer before becoming visible. Thread A's load of `y` can happen while `x = 1` is still in the store buffer. Thread B's load of `x` can happen while `y = 1` is still in the store buffer. Both loads see the old value (0).
@@ -128,10 +150,12 @@ The fix: make the stores `memory_order_seq_cst` (which adds `mfence` after each 
 
 C11/C++11 also provide standalone fences:
 
-```c
-atomic_thread_fence(memory_order_acquire);   // Read barrier
-atomic_thread_fence(memory_order_release);   // Write barrier
-atomic_thread_fence(memory_order_seq_cst);   // Full barrier
+```rust
+use std::sync::atomic::{fence, Ordering};
+
+fence(Ordering::Acquire);   // Read barrier
+fence(Ordering::Release);   // Write barrier
+fence(Ordering::SeqCst);    // Full barrier
 ```
 
 These affect ALL subsequent or preceding memory operations, not just those on a specific atomic variable. Use cases: integrating with non-atomic code, or when you need ordering between multiple variables.
@@ -140,13 +164,16 @@ These affect ALL subsequent or preceding memory operations, not just those on a 
 
 Even without CPU reordering, the compiler can reorder memory operations. The `volatile` keyword is NOT a memory barrier — it only prevents the compiler from optimizing away the access, not from reordering it relative to other accesses.
 
-```c
-int data = 0;
-volatile int ready = 0;  // Does NOT guarantee ordering!
+```rust
+static mut DATA: i32 = 0;
+static mut READY: i32 = 0;  // volatile does NOT guarantee ordering!
 
 // Thread A
-data = 42;
-ready = 1;  // Compiler may reorder: ready = 1 before data = 42!
+unsafe {
+    DATA = 42;
+    // Compiler may reorder: ready = 1 before data = 42!
+    READY = 1;
+}
 ```
 
 The fix: use `atomic_signal_fence(memory_order_acq_rel)` for compiler-only barriers (no CPU instructions emitted), or use proper atomics.

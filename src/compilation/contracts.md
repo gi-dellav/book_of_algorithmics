@@ -22,9 +22,9 @@ Examples of UB:
 UB is not a mistake. It's a deliberate design choice that enables optimization.
 
 Consider signed overflow:
-```c
-int check_overflow(int x) {
-    return x + 1 > x;  // Always true if no overflow allowed
+```rust
+fn check_overflow(x: i32) -> bool {
+    x + 1 > x  // UB in C (signed overflow); Rust panics in debug, wraps in release
 }
 ```
 
@@ -32,8 +32,8 @@ If signed overflow were defined (wrapping, like unsigned), `x + 1 > x` would be 
 
 More importantly, UB enables the compiler to reason about loop bounds:
 
-```c
-for (int i = 0; i <= n; i++) { ... }  // i and n are signed int
+```rust
+for i in 0..=n { /* ... */ }  // Panics on overflow in debug, wraps in release
 ```
 
 If `n == INT_MAX`, the loop would run forever (or overflow). Since signed overflow is UB, the compiler can assume `n < INT_MAX` and generate a count-toward-zero loop that's one instruction shorter.
@@ -44,15 +44,15 @@ If `n == INT_MAX`, the loop would run forever (or overflow). Since signed overfl
 
 The most dangerous UB is the kind that *appears* to work at `-O0` but breaks at `-O2`:
 
-```c
+```rust
 // BUG: signed overflow
-int midpoint(int a, int b) {
-    return (a + b) / 2;  // UB if a + b overflows
+fn midpoint(a: i32, b: i32) -> i32 {
+    (a + b) / 2  // UB if a + b overflows (panics in debug)
 }
 
 // FIX:
-int midpoint(int a, int b) {
-    return a + (b - a) / 2;  // Safe
+fn midpoint(a: i32, b: i32) -> i32 {
+    a + (b - a) / 2  // Safe
 }
 ```
 
@@ -60,37 +60,38 @@ At `-O0`, `(a + b) / 2` might wrap and produce a "reasonable" answer. At `-O2`, 
 
 Other common traps:
 
-```c
-// BUG: Uninitialized variable
-int x;
-if (condition) x = 5;
-// x may be used uninitialized if condition is false
+```rust
+// BUG: Uninitialized variable — Rust compiler rejects this at compile time
+let x: i32;
+if condition { x = 5; }
+// x may be used uninitialized if condition is false — error[E0381]!
 
 // BUG: Out-of-bounds access
-int a[10];
-a[10] = 0;  // UB — writes one past the end
+let mut a = [0i32; 10];
+a[10] = 0;  // Rust: panic at runtime, not UB
 
-// BUG: Use-after-free
-int *p = malloc(sizeof(int));
-free(p);
-*p = 42;  // UB
+// BUG: Use-after-free — prevented by ownership
+let p = Box::new(42);
+drop(p);
+// *p = 42;  // Does not compile; ownership prevents use-after-free
 
-// BUG: Violating strict aliasing
-float f = 1.0f;
-int *ip = (int *)&f;
-*ip = 0x3f800000;  // UB — may work, may break
+// BUG: Violating strict aliasing — use f32::to_bits() or mem::transmute
+let f = 1.0f32;
+let bits: u32 = f.to_bits();  // Safe, well-defined
 ```
 
 ## Assumptions and Unreachable
 
 You can explicitly communicate invariants to the compiler:
 
-```c
+```rust
 // Tell the compiler 'n' is a multiple of 8
-void process(float *a, int n) {
-    if (n % 8 != 0) __builtin_unreachable();
-    for (int i = 0; i < n; i++)
-        a[i] *= 2.0f;
+unsafe fn process(a: &mut [f32]) {
+    let n = a.len();
+    if n % 8 != 0 { std::hint::unreachable_unchecked(); }
+    for i in 0..n {
+        a[i] *= 2.0;
+    }
 }
 ```
 
@@ -104,8 +105,12 @@ C++20 introduced `[[likely]]` and `[[unlikely]]` for branch hints. C++23 adds `[
 
 For now, the most portable way to express invariants is:
 
-```c
-#define ASSUME(cond) do { if (!(cond)) __builtin_unreachable(); } while(0)
+```rust
+macro_rules! assume {
+    ($cond:expr) => {
+        if !$cond { unsafe { std::hint::unreachable_unchecked() } }
+    };
+}
 ```
 
 Use it sparingly. Every assumption is a potential bug if violated.
@@ -126,21 +131,25 @@ Don't add assumptions or restrict to "fix" performance problems you haven't meas
 
 C's strict aliasing rule says you may only access an object through an lvalue of a compatible type. The exceptions: `char*`, `unsigned char*`, and `std::byte*` can alias anything.
 
-```c
-// Violation (UB):
-float f = 1.0f;
-int *p = (int *)&f;
-return *p;
+```rust
+// In Rust, strict aliasing is enforced by the borrow checker.
+// Safe type-punning:
 
-// Allowed:
-float f = 1.0f;
-unsigned char *p = (unsigned char *)&f;
-return p[0];  // OK — char* may alias
+let f = 1.0f32;
 
-// Preferred (no pointer casting):
-float f = 1.0f;
-int result;
-memcpy(&result, &f, sizeof(result));  // Compiler elides memcpy if possible
+// Use to_bits() for safe bitwise reinterpretation:
+let bits: u32 = f.to_bits();
+
+// Or transmute (unsafe, well-defined for same-size types):
+let bits: u32 = unsafe { std::mem::transmute(f) };
+
+// Byte-level access is always allowed:
+let bytes: [u8; 4] = f.to_le_bytes();
+let byte0 = bytes[0];  // OK
+
+// Preferred: use to_bits() / from_bits()
+let f = 1.0f32;
+let result: u32 = f.to_bits();  // Safe, no pointer casting needed
 ```
 
 Strict aliasing enables the compiler to reorder loads and stores. If it knows a `float*` and an `int*` can't alias, it can keep the float value in a register across writes through the int pointer. Violating strict aliasing leads to "impossible" bugs where a value changes apparently at random.

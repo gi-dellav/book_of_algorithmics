@@ -29,12 +29,12 @@ All operations are modulo m:
 - **Subtraction**: `(a − b) mod m`. If the result is negative, add m.
 - **Multiplication**: `(a × b) mod m`. The product can be up to m², requiring double-width arithmetic (`__int128` for 64-bit modulus).
 
-```c
+```rust
 // Modular addition, branchless (assumes 0 ≤ a,b < m)
-uint64_t mod_add(uint64_t a, uint64_t b, uint64_t m) {
-    uint64_t sum = a + b;
-    uint64_t diff = sum - m;
-    return (sum >= m || sum < a) ? diff : sum;
+fn mod_add(a: u64, b: u64, m: u64) -> u64 {
+    let sum = a.wrapping_add(b);
+    let diff = sum.wrapping_sub(m);
+    if sum >= m || sum < a { diff } else { sum }
     // The 'sum < a' handles the case where a+b overflowed (wrapped around)
 }
 ```

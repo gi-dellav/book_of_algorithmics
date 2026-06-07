@@ -63,11 +63,11 @@ Most of the time, you don't need to care. When you do, `<endian.h>` (C++20: `<bi
 
 x86-64 has partial support for 128-bit integers through the `mul` instruction. Multiplying two 64-bit numbers produces a 128-bit result: the low 64 bits in `rax`, the high 64 bits in `rdx`.
 
-```c
-// GCC/Clang extension:
-__int128 a = 0x123456789ABCDEF0;
-__int128 b = 0x0FEDCBA987654321;
-__int128 product = a * b;  // Uses mul/imul
+```rust
+// Rust has native i128/u128:
+let a: i128 = 0x123456789ABCDEF0;
+let b: i128 = 0x0FEDCBA987654321;
+let product: i128 = a * b;  // Uses mul/imul
 ```
 
 The compiler handles `__int128` arithmetic with library calls for operations beyond multiplication (division, modulo, shift by variable amount). 128-bit add/sub are cheap (two-instruction sequences). 128-bit division is expensive (software implementation).
@@ -79,22 +79,23 @@ C and C++ diverge sharply here:
 - **Unsigned overflow**: Defined behavior. Wraps modulo 2^N.
 - **Signed overflow**: Undefined behavior. The compiler may assume it never happens.
 
-```c
-int a = INT_MAX;
-int b = a + 1;  // UB! Compiler may optimize this away or generate unexpected code.
+```rust
+let a: i32 = i32::MAX;
+let b: i32 = a.wrapping_add(1);  // Explicit wrapping: no UB, two's complement result
 
-unsigned c = UINT_MAX;
-unsigned d = c + 1;  // Defined, wraps to 0.
+let c: u32 = u32::MAX;
+let d: u32 = c.wrapping_add(1);  // Wraps to 0
 ```
 
 The UB of signed overflow enables important optimizations. See `compilation/contracts.md` for details. For safe signed arithmetic, use compiler builtins:
 
-```c
-int result;
-if (__builtin_add_overflow(a, b, &result)) {
+```rust
+if let Some(result) = a.checked_add(b) {
+    // Handle success
+} else {
     // Handle overflow
 }
-// Or use: __builtin_sadd_overflow, __builtin_ssubl_overflow, __builtin_smul_overflow
+// Also: a.checked_sub(b), a.checked_mul(b), etc.
 ```
 
 These generate efficient code (a single `add` + `jo` / `jno` sequence) rather than expensive checking logic.
@@ -103,9 +104,9 @@ These generate efficient code (a single `add` + `jo` / `jno` sequence) rather th
 
 C leaves the right shift of signed negative integers **implementation-defined** (not UB, but not portable):
 
-```c
-int x = -8;
-int y = x >> 1;  // Implementation-defined: -4 on most platforms (arithmetic shift)
+```rust
+let x: i32 = -8;
+let y: i32 = x >> 1;  // Arithmetic shift in Rust, -4 on all platforms
 ```
 
 x86's `sar` (Shift Arithmetic Right) preserves the sign bit, filling with 1s for negative numbers. Most compilers use `sar` for signed `>>`. But if portability matters, use unsigned types for bit manipulation.

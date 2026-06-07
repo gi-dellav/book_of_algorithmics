@@ -8,20 +8,24 @@ The pointer-chasing experiment from the latency article creates dependent loads 
 
 To measure MLP, create D independent pointer chains:
 
-```c
-for (int D = 1; D <= 64; D *= 2) {
+```rust
+let mut d = 1;
+while d <= 64 {
     // Create D independent random cyclic lists
-    int *indices[D];
-    for (int d = 0; d < D; d++) {
-        indices[d] = perm[d];  // Starting pointer for each chain
+    let mut indices: Vec<usize> = Vec::with_capacity(d);
+    for idx in 0..d {
+        indices.push(perm[idx]);  // Starting pointer for each chain
     }
     
     // Interleave access to the D chains
-    for (int i = 0; i < ITERS; i++) {
-        for (int d = 0; d < D; d++) {
-            indices[d] = a[indices[d]];  // Advance one step in chain d
+    for _ in 0..ITERS {
+        for idx in 0..d {
+            // SAFETY: indices are valid within bounds of `a`
+            indices[idx] = unsafe { *a.as_ptr().add(indices[idx]) };  // Advance one step in chain d
         }
     }
+    
+    d *= 2;
 }
 ```
 

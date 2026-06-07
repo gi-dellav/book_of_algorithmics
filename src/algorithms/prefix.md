@@ -4,10 +4,10 @@ The prefix sum (scan) computes `b[i] = sum(a[0..i])` for each i. It appears simp
 
 ## The Problem
 
-```c
-void prefix_sum_scalar(float *a, float *b, int n) {
-    float sum = 0;
-    for (int i = 0; i < n; i++) {
+```rust
+fn prefix_sum_scalar(a: &[f32], b: &mut [f32]) {
+    let mut sum = 0.0;
+    for i in 0..a.len() {
         sum += a[i];
         b[i] = sum;
     }
@@ -24,32 +24,39 @@ The key insight: we can compute the prefix sum in two passes, breaking the depen
 
 **Pass 2**: Compute the running sum of block sums (scalar prefix sum over B elements — negligible). Add the running block sum to each element within each block (vectorizable, no dependency).
 
-```c
-void prefix_sum_blocked(float *a, float *b, int n) {
-    const int B = 256;
-    float block_sums[n / B];
-    
+```rust
+fn prefix_sum_blocked(a: &[f32], b: &mut [f32]) {
+    let n = a.len();
+    const B: usize = 256;
+    let mut block_sums = vec![0.0f32; n / B];
+
     // Pass 1: compute block sums (vectorized)
-    for (int i = 0; i < n; i += B) {
-        float sum = 0;
-        for (int j = 0; j < B; j++)
+    let mut i = 0;
+    while i < n {
+        let mut sum = 0.0;
+        for j in 0..B {
             sum += a[i + j];  // Vectorizable — multiple accumulators
+        }
         block_sums[i / B] = sum;
+        i += B;
     }
-    
+
     // Prefix sum of block sums (scalar, small)
-    for (int i = 1; i < n / B; i++)
-        block_sums[i] += block_sums[i - 1];
-    
+    for bi in 1..(n / B) {
+        block_sums[bi] += block_sums[bi - 1];
+    }
+
     // Pass 2: add block sum prefix and compute local prefix sum
-    float running = 0;  // block_sums[i/B - 1] for current block
-    for (int i = 0; i < n; i += B) {
-        float acc = running;
-        for (int j = 0; j < B; j++) {
+    let mut running = 0.0;  // block_sums[i/B - 1] for current block
+    let mut i = 0;
+    while i < n {
+        let mut acc = running;
+        for j in 0..B {
             acc += a[i + j];
             b[i + j] = acc;
         }
         running = block_sums[i / B];
+        i += B;
     }
 }
 ```
@@ -60,20 +67,24 @@ The inner loops in Pass 1 and Pass 2 are vectorizable (no cross-iteration depend
 
 For the inner loop of Pass 2, we can compute the prefix sum of an 8-element SIMD vector in-register using a shift-and-add pattern:
 
-```c
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
 // Compute prefix sum of 8 floats in a SIMD register
-__m256 simd_prefix_sum(__m256 v) {
+unsafe fn simd_prefix_sum(v: __m256) -> __m256 {
     // v = [a, b, c, d, e, f, g, h]
-    __m256 shifted1 = _mm256_permute_ps(v, 0x93);  // Rotate left by 2
-    v = _mm256_add_ps(v, shifted1);  // [a+b, b+c, c+d, d+e, e+f, f+g, g+h, h+a]
-    
-    __m256 shifted2 = _mm256_permute_ps(v, 0x4E);  // Swap halves
-    shifted2 = _mm256_permute_ps(shifted2, 0xB1);   // Rotate within halves
-    v = _mm256_add_ps(v, shifted2);
-    
+    let shifted1 = _mm256_permute_ps(v, 0x93);  // Rotate left by 2
+    let v = _mm256_add_ps(v, shifted1);  // [a+b, b+c, c+d, d+e, e+f, f+g, g+h, h+a]
+
+    let shifted2 = _mm256_permute_ps(v, 0x4E);  // Swap halves
+    let shifted2 = _mm256_permute_ps(shifted2, 0xB1);   // Rotate within halves
+    let v = _mm256_add_ps(v, shifted2);
+
     // Now lanes contain partial prefix sums
     // Final shift-and-add to complete
     // ... (requires the running sum from previous vectors)
+    v
 }
 ```
 
@@ -83,22 +94,29 @@ The general technique: for a vector of 2^k elements, log₂(2^k) = k shift-and-a
 
 Instead of loading from `a` and storing to `b`, which requires two memory streams, we can merge Pass 1 and Pass 2 into a single streaming pass using the running block sum approach — compute block sums on the fly without storing them:
 
-```c
-void prefix_sum_fast(float *a, float *b, int n) {
-    const int B = 256;
-    float block_sum = 0;
-    
-    for (int i = 0; i < n; i += B) {
-        float local_acc[8] = {0};  // SIMD accumulators
-        
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+unsafe fn prefix_sum_fast(a: *const f32, b: *mut f32, n: usize) {
+    const B: usize = 256;
+    let mut block_sum = 0.0f32;
+
+    let mut i = 0;
+    while i < n {
+        let mut local_acc = [0.0f32; 8];  // SIMD accumulators
+
         // Compute the block's prefix sum into b, accumulating block sum
-        for (int j = 0; j < B; j += 8) {
-            __m256 v = _mm256_loadu_ps(a + i + j);
+        let mut j = 0;
+        while j < B {
+            let v = _mm256_loadu_ps(a.add(i + j));
             // ... SIMD prefix sum of v, adding block_sum to each lane ...
-            _mm256_storeu_ps(b + i + j, result);
+            _mm256_storeu_ps(b.add(i + j), /* result */ v);
+            j += 8;
         }
-        
+
         block_sum += local_acc[7];  // Last element's sum becomes the next block's offset
+        i += B;
     }
 }
 ```

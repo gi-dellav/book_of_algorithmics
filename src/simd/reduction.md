@@ -6,23 +6,23 @@ A reduction combines all elements of a vector into a single value — sum, minim
 
 To sum all 8 elements of an `__m256`:
 
-```c
+```rust
 // Method 1: hadd (slow, microcoded)
-__m256 hsum = _mm256_hadd_ps(v, v);          // [a+b, c+d, a+b, c+d, e+f, g+h, e+f, g+h]
-hsum = _mm256_hadd_ps(hsum, hsum);           // [a+b+c+d, ...]
-float sum = _mm256_cvtss_f32(hsum);          // Bottom element
+let hsum = unsafe { _mm256_hadd_ps(v, v) };          // [a+b, c+d, a+b, c+d, e+f, g+h, e+f, g+h]
+let hsum = unsafe { _mm256_hadd_ps(hsum, hsum) };    // [a+b+c+d, ...]
+let sum = unsafe { _mm256_cvtss_f32(hsum) };         // Bottom element
 ```
 
 `hadd` (horizontal add) is microcoded — it's implemented as a sequence of shuffles + vertical adds. It's slow (3–5 µops, latency ~6–8 cycles) and is often not the fastest approach.
 
-```c
+```rust
 // Method 2: Manual shuffle + add (faster)
-__m128 lo = _mm256_castps256_ps128(v);        // Low 128 bits
-__m128 hi = _mm256_extractf128_ps(v, 1);       // High 128 bits
-__m128 sum128 = _mm_add_ps(lo, hi);            // 4 partial sums
-sum128 = _mm_hadd_ps(sum128, sum128);          // 2 partial sums
-sum128 = _mm_hadd_ps(sum128, sum128);          // 1 final sum
-float sum = _mm_cvtss_f32(sum128);
+let lo = unsafe { _mm256_castps256_ps128(v) };        // Low 128 bits
+let hi = unsafe { _mm256_extractf128_ps::<1>(v) };     // High 128 bits
+let sum128 = unsafe { _mm_add_ps(lo, hi) };            // 4 partial sums
+let sum128 = unsafe { _mm_hadd_ps(sum128, sum128) };   // 2 partial sums
+let sum128 = unsafe { _mm_hadd_ps(sum128, sum128) };   // 1 final sum
+let sum = unsafe { _mm_cvtss_f32(sum128) };
 ```
 
 This uses `extractf128` + vertical add for the first step, then `hadd` for the remaining 4→2→1 reduction. Faster than 2× `hadd` on 256-bit vectors because `extractf128` is a single µop.
@@ -35,18 +35,20 @@ For any associative reduction (sum, min, max, bitwise AND/OR/XOR):
 2. **After the loop**: horizontally reduce each accumulator.
 3. **Combine accumulator results**.
 
-```c
-float sum_array_avx2(float *a, int n) {
-    __m256 sum0 = _mm256_setzero_ps();
-    __m256 sum1 = _mm256_setzero_ps();
-    __m256 sum2 = _mm256_setzero_ps();
-    __m256 sum3 = _mm256_setzero_ps();
+```rust
+unsafe fn sum_array_avx2(a: *const f32, n: usize) -> f32 {
+    let mut sum0 = _mm256_setzero_ps();
+    let mut sum1 = _mm256_setzero_ps();
+    let mut sum2 = _mm256_setzero_ps();
+    let mut sum3 = _mm256_setzero_ps();
     
-    for (int i = 0; i < n; i += 32) {
-        sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(a + i));
-        sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(a + i + 8));
-        sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(a + i + 16));
-        sum3 = _mm256_add_ps(sum3, _mm256_loadu_ps(a + i + 24));
+    let mut i = 0;
+    while i + 31 < n {
+        sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(a.add(i)));
+        sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(a.add(i + 8)));
+        sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(a.add(i + 16)));
+        sum3 = _mm256_add_ps(sum3, _mm256_loadu_ps(a.add(i + 24)));
+        i += 32;
     }
     
     // Combine accumulators
@@ -55,12 +57,12 @@ float sum_array_avx2(float *a, int n) {
     sum0 = _mm256_add_ps(sum0, sum2);
     
     // Horizontal reduction of sum0
-    __m128 lo = _mm256_castps256_ps128(sum0);
-    __m128 hi = _mm256_extractf128_ps(sum0, 1);
-    __m128 sum = _mm_add_ps(lo, hi);
+    let lo = _mm256_castps256_ps128(sum0);
+    let hi = _mm256_extractf128_ps::<1>(sum0);
+    let mut sum = _mm_add_ps(lo, hi);
     sum = _mm_hadd_ps(sum, sum);
     sum = _mm_hadd_ps(sum, sum);
-    return _mm_cvtss_f32(sum);
+    _mm_cvtss_f32(sum)
 }
 ```
 
@@ -70,9 +72,9 @@ With 4 accumulators × 8 floats each = 32 elements processed per iteration, the 
 
 A special-purpose but fast instruction: finds the position and value of the minimum unsigned 16-bit integer in a 128-bit vector:
 
-```c
-__m128i v = _mm_setr_epi16(5, 3, 8, 1, 9, 2, 7, 4);
-__m128i minpos = _mm_minpos_epu16(v);
+```rust
+let v = unsafe { _mm_setr_epi16(5, 3, 8, 1, 9, 2, 7, 4) };
+let minpos = unsafe { _mm_minpos_epu16(v) };
 // minpos: [1, 3] — minimum value 1 at position 3
 ```
 
@@ -82,9 +84,9 @@ Latency: 4 cycles, throughput: 1/cycle. Much faster than a manual min-reduction 
 
 AVX-512 introduces dedicated reduction instructions (AVX-512F):
 
-```c
-float sum = _mm512_reduce_add_ps(v);   // Sum all 16 floats
-float min = _mm512_reduce_min_ps(v);   // Minimum of 16 floats
+```rust
+let sum = unsafe { _mm512_reduce_add_ps(v) };   // Sum all 16 floats
+let min = unsafe { _mm512_reduce_min_ps(v) };   // Minimum of 16 floats
 ```
 
 These are implemented as microcode sequences but are well-optimized. Easier to write and read than manual shuffle sequences. Still, for maximum throughput, multiple accumulators + manual reduction is the pattern.

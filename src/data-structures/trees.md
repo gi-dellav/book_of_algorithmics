@@ -12,44 +12,95 @@ The design tension: how much rebalancing work per update vs. how balanced the tr
 
 Invented by Adelson-Velsky and Landis (1962). Each node stores a **balance factor**: `height(left) - height(right)`. After each insertion or deletion, walk up the tree and rebalance any node with |balance factor| > 1 using rotations.
 
-```c
-struct AVLNode {
-    int key;
-    int height;
-    AVLNode *left, *right;
-};
+```rust
+use std::alloc::{alloc, Layout};
 
-AVLNode *avl_insert(AVLNode *node, int key) {
-    if (!node) return new_node(key);
-    
-    if (key < node->key)
-        node->left = avl_insert(node->left, key);
-    else if (key > node->key)
-        node->right = avl_insert(node->right, key);
-    else
-        return node;  // Duplicate
-    
-    node->height = 1 + max(height(node->left), height(node->right));
-    int balance = height(node->left) - height(node->right);
-    
-    // Left-Left case
-    if (balance > 1 && key < node->left->key)
-        return rotate_right(node);
-    // Right-Right case
-    if (balance < -1 && key > node->right->key)
-        return rotate_left(node);
-    // Left-Right case
-    if (balance > 1 && key > node->left->key) {
-        node->left = rotate_left(node->left);
-        return rotate_right(node);
+#[repr(C)]
+struct AVLNode {
+    key: i32,
+    height: i32,
+    left: *mut AVLNode,
+    right: *mut AVLNode,
+}
+
+fn height(n: *const AVLNode) -> i32 {
+    if n.is_null() { 0 } else { unsafe { (*n).height } }
+}
+
+fn new_node(key: i32) -> *mut AVLNode {
+    unsafe {
+        let layout = Layout::new::<AVLNode>();
+        let n = alloc(layout) as *mut AVLNode;
+        (*n).key = key;
+        (*n).height = 1;
+        (*n).left = std::ptr::null_mut();
+        (*n).right = std::ptr::null_mut();
+        n
     }
-    // Right-Left case
-    if (balance < -1 && key < node->right->key) {
-        node->right = rotate_right(node->right);
-        return rotate_left(node);
+}
+
+fn rotate_right(y: *mut AVLNode) -> *mut AVLNode {
+    unsafe {
+        let x = (*y).left;
+        let t2 = (*x).right;
+        (*x).right = y;
+        (*y).left = t2;
+        (*y).height = 1 + std::cmp::max(height((*y).left), height((*y).right));
+        (*x).height = 1 + std::cmp::max(height((*x).left), height((*x).right));
+        x
     }
-    
-    return node;
+}
+
+fn rotate_left(x: *mut AVLNode) -> *mut AVLNode {
+    unsafe {
+        let y = (*x).right;
+        let t2 = (*y).left;
+        (*y).left = x;
+        (*x).right = t2;
+        (*x).height = 1 + std::cmp::max(height((*x).left), height((*x).right));
+        (*y).height = 1 + std::cmp::max(height((*y).left), height((*y).right));
+        y
+    }
+}
+
+fn avl_insert(node: *mut AVLNode, key: i32) -> *mut AVLNode {
+    unsafe {
+        if node.is_null() {
+            return new_node(key);
+        }
+
+        if key < (*node).key {
+            (*node).left = avl_insert((*node).left, key);
+        } else if key > (*node).key {
+            (*node).right = avl_insert((*node).right, key);
+        } else {
+            return node;
+        }
+
+        (*node).height = 1 + std::cmp::max(height((*node).left), height((*node).right));
+        let balance = height((*node).left) - height((*node).right);
+
+        // Left-Left case
+        if balance > 1 && key < (*(*node).left).key {
+            return rotate_right(node);
+        }
+        // Right-Right case
+        if balance < -1 && key > (*(*node).right).key {
+            return rotate_left(node);
+        }
+        // Left-Right case
+        if balance > 1 && key > (*(*node).left).key {
+            (*node).left = rotate_left((*node).left);
+            return rotate_right(node);
+        }
+        // Right-Left case
+        if balance < -1 && key < (*(*node).right).key {
+            (*node).right = rotate_right((*node).right);
+            return rotate_left(node);
+        }
+
+        node
+    }
 }
 ```
 
@@ -73,38 +124,47 @@ Invented by Rudolf Bayer (1972) as "symmetric binary B-trees," popularized by Gu
 
 These invariants guarantee height ≤ 2 log₂(n). Insertion fixes at most 2 rotations; deletion fixes at most 3. Fewer rotations than AVL, but the tree is less strictly balanced → ~10% slower lookups, ~10% faster insertions.
 
-```c
-enum Color { RED, BLACK };
+```rust
+#[repr(u8)]
+enum Color {
+    Red = 0,
+    Black = 1,
+}
 
+#[repr(C)]
 struct RBNode {
-    int key;
-    Color color;
-    RBNode *left, *right, *parent;
-};
+    key: i32,
+    color: Color,
+    left: *mut RBNode,
+    right: *mut RBNode,
+    parent: *mut RBNode,
+}
 
-void rb_insert_fixup(RBNode *node) {
-    while (node->parent && node->parent->color == RED) {
-        RBNode *grand = node->parent->parent;
-        if (node->parent == grand->left) {
-            RBNode *uncle = grand->right;
-            if (uncle && uncle->color == RED) {
-                // Case 1: Recolor
-                node->parent->color = BLACK;
-                uncle->color = BLACK;
-                grand->color = RED;
-                node = grand;
-            } else {
-                // Case 2 & 3: Rotations
-                if (node == node->parent->right) {
-                    node = node->parent;
-                    rotate_left(node);
+fn rb_insert_fixup(mut node: *mut RBNode) {
+    unsafe {
+        while !(*node).parent.is_null() && (*(*node).parent).color as u8 == Color::Red as u8 {
+            let grand = (*(*node).parent).parent;
+            if (*node).parent == (*grand).left {
+                let uncle = (*grand).right;
+                if !uncle.is_null() && (*uncle).color as u8 == Color::Red as u8 {
+                    // Case 1: Recolor
+                    (*(*node).parent).color = Color::Black;
+                    (*uncle).color = Color::Black;
+                    (*grand).color = Color::Red;
+                    node = grand;
+                } else {
+                    // Case 2 & 3: Rotations
+                    if node == (*(*node).parent).right {
+                        node = (*node).parent;
+                        rotate_left(node);
+                    }
+                    (*(*node).parent).color = Color::Black;
+                    (*grand).color = Color::Red;
+                    rotate_right(grand);
                 }
-                node->parent->color = BLACK;
-                grand->color = RED;
-                rotate_right(grand);
+            } else {
+                // Mirror cases
             }
-        } else {
-            // Mirror cases
         }
     }
 }
@@ -116,32 +176,40 @@ Red-black trees are the most widely implemented: `std::map`, Java `TreeMap`, Lin
 
 A treap (tree + heap) assigns each node a random priority and maintains both BST order (by key) and heap order (by priority). Insertion: insert as a leaf by key, then rotate up while the heap property is violated.
 
-```c
+```rust
+#[repr(C)]
 struct TreapNode {
-    int key;
-    int priority;  // Random
-    TreapNode *left, *right;
-};
+    key: i32,
+    priority: i32,
+    left: *mut TreapNode,
+    right: *mut TreapNode,
+}
 
-TreapNode *treap_insert(TreapNode *node, int key) {
-    if (!node) {
-        TreapNode *n = malloc(sizeof(TreapNode));
-        n->key = key;
-        n->priority = rand();
-        n->left = n->right = NULL;
-        return n;
+fn treap_insert(node: *mut TreapNode, key: i32) -> *mut TreapNode {
+    unsafe {
+        if node.is_null() {
+            let layout = Layout::new::<TreapNode>();
+            let n = alloc(layout) as *mut TreapNode;
+            (*n).key = key;
+            (*n).priority = rand();
+            (*n).left = std::ptr::null_mut();
+            (*n).right = std::ptr::null_mut();
+            return n;
+        }
+
+        if key < (*node).key {
+            (*node).left = treap_insert((*node).left, key);
+            if (*(*node).left).priority > (*node).priority {
+                return rotate_right(node);
+            }
+        } else {
+            (*node).right = treap_insert((*node).right, key);
+            if (*(*node).right).priority > (*node).priority {
+                return rotate_left(node);
+            }
+        }
+        node
     }
-    
-    if (key < node->key) {
-        node->left = treap_insert(node->left, key);
-        if (node->left->priority > node->priority)
-            node = rotate_right(node);
-    } else {
-        node->right = treap_insert(node->right, key);
-        if (node->right->priority > node->priority)
-            node = rotate_left(node);
-    }
-    return node;
 }
 ```
 
@@ -151,31 +219,41 @@ Expected height: ~4.3 log₂(n) (slightly worse than AVL/red-black due to the ra
 
 A splay tree (Sleator & Tarjan, 1985) is self-adjusting with **no** explicit balance information. Every operation (insert, lookup, delete) "splays" the accessed node to the root via rotations. This gives O(log n) **amortized** time per operation.
 
-```c
-void splay(SplayNode **root, SplayNode *x) {
-    while (x->parent) {
-        SplayNode *p = x->parent;
-        SplayNode *g = p->parent;
-        
-        if (!g) {
-            // Zig: parent is root
-            if (x == p->left) rotate_right(p);
-            else rotate_left(p);
-        } else if (x == p->left && p == g->left) {
-            // Zig-zig: both left children
-            rotate_right(g);
-            rotate_right(p);
-        } else if (x == p->right && p == g->right) {
-            // Zig-zig: both right children
-            rotate_left(g);
-            rotate_left(p);
-        } else {
-            // Zig-zag: mixed children
-            if (x == p->left) { rotate_right(p); rotate_left(g); }
-            else { rotate_left(p); rotate_right(g); }
+```rust
+fn splay(root: *mut *mut SplayNode, x: *mut SplayNode) {
+    unsafe {
+        while !(*x).parent.is_null() {
+            let p = (*x).parent;
+            let g = (*p).parent;
+
+            if g.is_null() {
+                // Zig: parent is root
+                if x == (*p).left {
+                    rotate_right(p);
+                } else {
+                    rotate_left(p);
+                }
+            } else if x == (*p).left && p == (*g).left {
+                // Zig-zig: both left children
+                rotate_right(g);
+                rotate_right(p);
+            } else if x == (*p).right && p == (*g).right {
+                // Zig-zig: both right children
+                rotate_left(g);
+                rotate_left(p);
+            } else {
+                // Zig-zag: mixed children
+                if x == (*p).left {
+                    rotate_right(p);
+                    rotate_left(g);
+                } else {
+                    rotate_left(p);
+                    rotate_right(g);
+                }
+            }
         }
+        *root = x;
     }
-    *root = x;
 }
 ```
 

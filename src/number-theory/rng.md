@@ -6,9 +6,9 @@ Randomness is essential for cryptography, simulations, randomized algorithms, an
 
 Modern CPUs have a hardware random number generator:
 
-```c
-uint64_t x;
-_rdrand64_step(&x);  // Intel/AMD: true random number
+```rust
+let mut x: u64 = 0;
+unsafe { std::arch::x86_64::_rdrand64_step(&mut x); }  // Intel/AMD: true random number
 ```
 
 `rdrand` samples thermal noise from the CPU die, conditioning it with AES-CBC-MAC to remove bias. Throughput: ~100 MB/s (limited by entropy rate). Quality: true randomness, suitable for seeding cryptographic PRNGs.
@@ -40,16 +40,16 @@ Use LCGs only for non-cryptographic purposes where speed is paramount and qualit
 
 George Marsaglia's xorshift family uses only XOR and shift operations:
 
-```c
-uint64_t xorshift128plus(uint64_t s[2]) {
-    uint64_t s0 = s[0];
-    uint64_t s1 = s[1];
+```rust
+fn xorshift128plus(s: &mut [u64; 2]) -> u64 {
+    let mut s0 = s[0];
+    let mut s1 = s[1];
     s[0] = s1;
     s0 ^= s0 << 23;
     s1 ^= s1 >> 18;
     s1 ^= s0 ^ (s0 >> 5);
     s[1] = s1;
-    return s0 + s1;
+    s0.wrapping_add(s1)
 }
 ```
 
@@ -59,13 +59,13 @@ V8 (Chrome's JavaScript engine) used xorshift128+ for `Math.random()`. Throughpu
 
 Melissa O'Neill's PCG combines an LCG with a permutation function that scrambles the output:
 
-```c
-uint32_t pcg32(uint64_t *state) {
-    uint64_t oldstate = *state;
-    *state = oldstate * 6364136223846793005ull + 1442695040888963407ull;
-    uint32_t xorshifted = ((oldstate >> 18u) ^ oldstate) >> 27u;
-    uint32_t rot = oldstate >> 59u;
-    return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
+```rust
+fn pcg32(state: &mut u64) -> u32 {
+    let oldstate = *state;
+    *state = oldstate.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let xorshifted = (((oldstate >> 18) ^ oldstate) >> 27) as u32;
+    let rot = (oldstate >> 59) as u32;
+    (xorshifted >> rot) | (xorshifted << ((rot.wrapping_neg()) & 31))
 }
 ```
 
@@ -75,8 +75,8 @@ PCG produces higher-quality output than xorshift at similar speed. Used in NumPy
 
 A stream cipher that can also serve as a high-quality PRNG:
 
-```c
-void chacha20_block(uint32_t state[16], uint64_t counter, uint8_t output[64]) {
+```rust
+fn chacha20_block(state: &mut [u32; 16], counter: u64, output: &mut [u8; 64]) {
     // 20 rounds of quarter-round operations (add-rotate-XOR)
     // Produces 64 bytes of pseudo-random output per invocation
 }
@@ -88,14 +88,21 @@ ChaCha20 is cryptographic quality, constant-time, and fast (~0.5 cycles/byte wit
 
 Generate multiple random numbers in parallel:
 
-```c
+```rust
+use std::arch::x86_64::*;
+
 // Generate 8 independent streams of xorshift
-__m256i s0, s1;
-for (int i = 0; i < n; i += 8) {
-    s0 = _mm256_slli_epi64(s0, 23);
-    // ... xorshift256+ ...
-    __m256i result = _mm256_add_epi64(s0, s1);
-    _mm256_storeu_si256((__m256i*)(out + i), result);
+let mut s0: __m256i;
+let mut s1: __m256i;
+unsafe {
+    s0 = _mm256_setzero_si256();
+    s1 = _mm256_setzero_si256();
+    for i in (0..n).step_by(8) {
+        s0 = _mm256_slli_epi64::<23>(s0);
+        // ... xorshift256+ ...
+        let result = _mm256_add_epi64(s0, s1);
+        _mm256_storeu_si256(out.add(i) as *mut __m256i, result);
+    }
 }
 ```
 
@@ -105,13 +112,13 @@ SIMD PRNGs can saturate memory bandwidth: 8 streams × 8 bytes × 2 GHz = 128 GB
 
 The golden rule: **seed from a high-entropy source, then never again.**
 
-```c
-uint64_t seed;
-_rdrand64_step(&seed);  // Hardware entropy
+```rust
+let mut seed: u64 = 0;
+unsafe { std::arch::x86_64::_rdrand64_step(&mut seed); }  // Hardware entropy
 
-uint64_t state = seed;
+let mut state = seed;
 // Optionally: mix with address space layout, current time, PID for defense-in-depth
-state = wyhash(&seed, sizeof(seed), 0);
+state = wyhash(&seed, std::mem::size_of::<u64>(), 0);
 ```
 
 For reproducible research, log the seed. If your simulation finds a surprising result, you can re-run with the same seed to verify.

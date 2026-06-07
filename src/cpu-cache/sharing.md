@@ -31,11 +31,11 @@ This is the **cache coherence ping-pong**: if cores A and B alternate writing to
 
 Two threads increment different fields of the same structure — but the fields happen to be on the same cache line:
 
-```c
+```rust
 struct Counters {
-    int a;  // Thread 0 increments this
-    int b;  // Thread 1 increments this
-};
+    a: i32,  // Thread 0 increments this
+    b: i32,  // Thread 1 increments this
+}
 // a and b are on the same cache line → false sharing!
 ```
 
@@ -43,13 +43,14 @@ Thread 0's increment writes the cache line, invalidating thread 1's copy. Thread
 
 Fix: pad to cache line boundaries.
 
-```c
-struct alignas(64) Counters {
-    int a;
-    char _pad1[60];
+```rust
+#[repr(C, align(64))]
+struct Counters {
+    a: i32,
+    _pad1: [u8; 60],
     // b is now at offset 64 → different cache line
-    int b;
-};
+    b: i32,
+}
 ```
 
 `std::hardware_destructive_interference_size` (C++17) provides the minimum offset to avoid false sharing. Typically 64 on x86, 128 on some ARM systems.
@@ -95,11 +96,12 @@ Pinning threads to specific cores prevents the OS scheduler from migrating them,
 taskset -c 0-3 ./program  # Pin to cores 0, 1, 2, 3
 ```
 
-```c
-cpu_set_t cpuset;
-CPU_ZERO(&cpuset);
-CPU_SET(0, &cpuset);
-pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+```rust
+use std::mem;
+let mut cpuset: libc::cpu_set_t = unsafe { mem::zeroed() };
+unsafe { libc::CPU_ZERO(&mut cpuset); }
+unsafe { libc::CPU_SET(0, &mut cpuset); }
+unsafe { libc::pthread_setaffinity_np(libc::pthread_self(), mem::size_of::<libc::cpu_set_t>(), &cpuset); }
 ```
 
 For performance-critical multi-threaded code:

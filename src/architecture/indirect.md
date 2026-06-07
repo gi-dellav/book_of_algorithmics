@@ -17,24 +17,23 @@ When the predictor gets the target wrong, the penalty is the same as a mispredic
 
 The most common source of indirect branches in C++:
 
-```cpp
-class Base {
-public:
-    virtual void process() = 0;
-};
+```rust
+trait Process {
+    fn process(&self);
+}
 
-class DerivedA : public Base {
-public:
-    void process() override { /* A's implementation */ }
-};
+struct DerivedA;
+impl Process for DerivedA {
+    fn process(&self) { /* A's implementation */ }
+}
 
-class DerivedB : public Base {
-public:
-    void process() override { /* B's implementation */ }
-};
+struct DerivedB;
+impl Process for DerivedB {
+    fn process(&self) { /* B's implementation */ }
+}
 
-void call_process(Base *obj) {
-    obj->process();  // indirect call through vtable
+fn call_process(obj: &dyn Process) {
+    obj.process();  // indirect call through vtable
 }
 ```
 
@@ -57,23 +56,26 @@ If `call_process` is called with a mix of `DerivedA` and `DerivedB` objects, the
 
 The compiler can eliminate virtual dispatch when it can prove the concrete type:
 
-```cpp
-DerivedA obj;
+```rust
+let obj = DerivedA;
 obj.process();  // compiler knows this is DerivedA::process()
 ```
 
 Or with whole-program optimization / LTO:
 
-```cpp
-Base *obj = new DerivedA();
-obj->process();  // with LTO and escape analysis, the compiler might devirtualize this
+```rust
+let obj: Box<dyn Process> = Box::new(DerivedA);
+obj.process();  // with LTO and escape analysis, the compiler might devirtualize this
 ```
 
 Use `final` on classes and methods to enable devirtualization:
 
-```cpp
-class DerivedA final : public Base { ... };
-// Compiler now knows any Base* pointing to DerivedA must call DerivedA's methods
+```rust
+// Rust: prefer concrete types over trait objects for hot paths.
+// No `dyn Trait` = no vtable = always statically dispatched.
+fn call_process(obj: &DerivedA) {
+    obj.process();  // static dispatch, no vtable lookup
+}
 ```
 
 For hot code where virtual dispatch cannot be devirtualized, consider alternative polymorphism mechanisms: `std::variant` + `std::visit`, templates + CRTP, or manual type tagging with a `switch`.
@@ -83,22 +85,22 @@ For hot code where virtual dispatch cannot be devirtualized, consider alternativ
 A `switch` with many cases compiles to one of several strategies.
 
 **Sequential if-else chain** (few cases, sparse values):
-```c
-switch (x) {
-    case 1: return 10;
-    case 5: return 50;
-    case 100: return 1000;
-    default: return 0;
+```rust
+match x {
+    1 => 10,
+    5 => 50,
+    100 => 1000,
+    _ => 0,
 }
 ```
 Compiles to: `cmp x, 1; je ...; cmp x, 5; je ...; cmp x, 100; je ...`
 
 **Jump table** (many cases, dense values):
-```c
-switch (x) {
-    case 0: return 10;
-    case 1: return 20;
-    case 2: return 30;
+```rust
+match x {
+    0 => 10,
+    1 => 20,
+    2 => 30,
     // ... 100 cases ...
 }
 ```

@@ -12,16 +12,18 @@ Optimizations beyond `std::sort`:
 
 The standard partitioning step has a conditional branch for element comparison. A branchless version uses `cmov`:
 
-```c
-int partition_branchless(int *a, int lo, int hi) {
-    int pivot = a[lo];
-    int i = lo - 1, j = hi + 1;
-    while (1) {
+```rust
+unsafe fn partition_branchless(a: *mut i32, lo: usize, hi: usize) -> usize {
+    let pivot = *a.add(lo);
+    let mut i = lo.wrapping_sub(1) as isize;
+    let mut j = hi.wrapping_add(1) as isize;
+    loop {
         // Branchless: always advance i and j, swap based on predicate
-        do { i++; } while (a[i] < pivot);
-        do { j--; } while (a[j] > pivot);
-        if (i >= j) return j;
-        swap(a[i], a[j]);
+        loop { i += 1; if *a.add(i as usize) >= pivot { break; } }
+        loop { j -= 1; if *a.add(j as usize) <= pivot { break; } }
+        if i >= j { return j as usize; }
+        // swap(a[i], a[j])
+        a.add(i as usize).swap(a.add(j as usize));
     }
 }
 ```
@@ -48,34 +50,39 @@ For integer keys, radix sort is often faster than comparison-based sorting becau
 
 Sort by the least significant byte, then the next byte, ..., up to the most significant byte. Each pass is a counting sort:
 
-```c
-void radix_sort_lsd(uint32_t *a, int n) {
-    uint32_t *buf = malloc(n * sizeof(uint32_t));
-    
-    for (int byte = 0; byte < 4; byte++) {
+```rust
+unsafe fn radix_sort_lsd(a: *mut u32, n: usize) {
+    use std::alloc::{alloc, dealloc, Layout};
+
+    let layout = Layout::array::<u32>(n).unwrap();
+    let buf = alloc(layout) as *mut u32;
+
+    for byte in 0..4 {
         // Count occurrences of each byte value
-        int count[256] = {0};
-        int shift = byte * 8;
-        for (int i = 0; i < n; i++)
-            count[(a[i] >> shift) & 0xFF]++;
-        
-        // Prefix sum of counts → starting positions
-        int pos[256];
-        pos[0] = 0;
-        for (int b = 1; b < 256; b++)
-            pos[b] = pos[b-1] + count[b-1];
-        
-        // Scatter: place each element in its bucket
-        for (int i = 0; i < n; i++) {
-            int bucket = (a[i] >> shift) & 0xFF;
-            buf[pos[bucket]++] = a[i];
+        let mut count = [0usize; 256];
+        let shift = byte * 8;
+        for i in 0..n {
+            count[((*a.add(i) >> shift) & 0xFF) as usize] += 1;
         }
-        
+
+        // Prefix sum of counts → starting positions
+        let mut pos = [0usize; 256];
+        for b in 1..256 {
+            pos[b] = pos[b - 1] + count[b - 1];
+        }
+
+        // Scatter: place each element in its bucket
+        for i in 0..n {
+            let bucket = ((*a.add(i) >> shift) & 0xFF) as usize;
+            *buf.add(pos[bucket]) = *a.add(i);
+            pos[bucket] += 1;
+        }
+
         // Swap arrays
-        uint32_t *temp = a; a = buf; buf = temp;
+        std::ptr::swap(a, buf);
     }
-    
-    free(buf);
+
+    dealloc(buf, layout);
 }
 ```
 
@@ -95,17 +102,20 @@ A variant that doesn't require a secondary buffer, using in-place permutation wi
 
 For small arrays (n ≤ 64), sorting networks produce branchless, fixed-sequence code. A sorting network for 8 elements using AVX2:
 
-```c
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
 // Sort 8 floats in a SIMD register
-__m256 simd_sort_8(__m256 v) {
+unsafe fn simd_sort_8(v: __m256) -> __m256 {
     // Bitonic sorting network: 6 stages of min/max swaps
     // Stage 1
-    v = simd_minmax_swap(v, 0, 1);  // Compare-swap lanes 0-1
-    v = simd_minmax_swap(v, 2, 3);
-    v = simd_minmax_swap(v, 4, 5);
-    v = simd_minmax_swap(v, 6, 7);
+    let v = simd_minmax_swap(v, 0, 1);  // Compare-swap lanes 0-1
+    let v = simd_minmax_swap(v, 2, 3);
+    let v = simd_minmax_swap(v, 4, 5);
+    let v = simd_minmax_swap(v, 6, 7);
     // ... stages 2-6 ...
-    return v;
+    v
 }
 ```
 

@@ -38,13 +38,14 @@ The multiplication `m × n` is full-width, but `m < R` and R is typically the wo
 
 **Computing n'**: n' = −n^(−1) mod R. Since R = 2^64, we need the modular inverse of n modulo 2^64. This can be computed with a few iterations of a doubling trick (Newton-like for modular inverse):
 
-```c
+```rust
 // Compute n' = -n^(-1) mod 2^64
-uint64_t montgomery_nprime(uint64_t n) {
-    uint64_t inv = 1;
-    for (int i = 0; i < 5; i++)
-        inv = inv * (2 - n * inv);  // Newton iteration for inverse mod 2^(2^i)
-    return -inv;  // n' = (2^64 - inv) mod 2^64
+fn montgomery_nprime(n: u64) -> u64 {
+    let mut inv: u64 = 1;
+    for _ in 0..5 {
+        inv = inv.wrapping_mul(2u64.wrapping_sub(n.wrapping_mul(inv)));
+    }
+    inv.wrapping_neg()  // n' = (2^64 - inv) mod 2^64
 }
 ```
 
@@ -52,14 +53,14 @@ After 5 iterations, `inv` is the exact inverse of `n` modulo 2^64 (and the loop 
 
 ## Montgomery Multiplication
 
-```c
+```rust
 // Compute (a * b) * R^(-1) mod n  (REDC of the product)
-uint64_t montmul(uint64_t a, uint64_t b, uint64_t n, uint64_t nprime) {
-    __int128 T = (__int128)a * b;
-    uint64_t m = (uint64_t)T * nprime;  // Low 64 bits of T * nprime
-    __int128 t = (T + (__int128)m * n) >> 64;
-    if (t >= n) t -= n;
-    return (uint64_t)t;
+fn montmul(a: u64, b: u64, n: u64, nprime: u64) -> u64 {
+    let t_full: u128 = a as u128 * b as u128;
+    let m: u64 = (t_full as u64).wrapping_mul(nprime);  // Low 64 bits of T * nprime
+    let mut t: u128 = (t_full + (m as u128) * (n as u128)) >> 64;
+    if t >= n as u128 { t -= n as u128; }
+    t as u64
 }
 ```
 
@@ -90,20 +91,31 @@ The ~7% speedup for modular inverse hides the fact that each *multiplication* wi
 
 C++20 enables compile-time precomputation of `nprime` and `R² mod n`:
 
-```cpp
-template<uint64_t N>
-struct Montgomery {
-    static constexpr uint64_t R2 = ((__int128)1 << 128) % N;  // R² mod N
-    static constexpr uint64_t NPRIME = compute_nprime(N);
-    
-    static uint64_t mul(uint64_t a, uint64_t b) {
-        __int128 T = (__int128)a * b;
-        uint64_t m = (uint64_t)T * NPRIME;
-        __int128 t = (T + (__int128)m * N) >> 64;
-        if (t >= N) t -= N;
-        return t;
+```rust
+const fn compute_nprime_const(n: u64) -> u64 {
+    let mut inv: u64 = 1;
+    let mut i = 0;
+    while i < 5 {
+        inv = inv.wrapping_mul(2u64.wrapping_sub(n.wrapping_mul(inv)));
+        i += 1;
     }
-};
+    inv.wrapping_neg()
+}
+
+struct Montgomery<const N: u64>;
+
+impl<const N: u64> Montgomery<N> {
+    const R2: u64 = ((1u128 << 128) % N as u128) as u64;  // R² mod N
+    const NPRIME: u64 = compute_nprime_const(N);
+    
+    fn mul(a: u64, b: u64) -> u64 {
+        let t_full: u128 = a as u128 * b as u128;
+        let m: u64 = (t_full as u64).wrapping_mul(Self::NPRIME);
+        let mut t: u128 = (t_full + (m as u128) * (N as u128)) >> 64;
+        if t >= N as u128 { t -= N as u128; }
+        t as u64
+    }
+}
 ```
 
 For fixed-modulus arithmetic (common in finite field libraries), this eliminates the conversion overhead entirely — the compiler bakes `R²` and `nprime` into the code as constants.

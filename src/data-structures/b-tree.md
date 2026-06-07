@@ -6,13 +6,14 @@ Static S-trees are fast but cannot be updated. The **B⁻ tree** (pronounced "B-
 
 A B⁻ tree node for 32-bit keys:
 
-```c
+```rust
+#[repr(C)]
 struct BMinusNode {
-    int keys[16];          // Up to 16 keys (one cache line for keys)
-    int children[17];      // 17 child pointers (another cache line)
-    int num_keys;          // Current number of keys (1-16)
-    bool is_leaf;
-};
+    keys: [i32; 16],      // Up to 16 keys (one cache line for keys)
+    children: [i32; 17],  // 17 child pointers (another cache line)
+    num_keys: i32,         // Current number of keys (1-16)
+    is_leaf: bool,
+}
 ```
 
 The node spans two cache lines: one for keys (64 bytes), one for children (68 bytes, padded to 64). The search structure matches the S-tree: 16 keys compared with one SIMD instruction. But unlike the S-tree, the child pointers are *explicit* (not computed from position) because nodes can be anywhere in memory — the tree is dynamic, nodes are allocated on the heap.
@@ -25,12 +26,16 @@ Actually, we can fit it in one cache line by storing children interleaved with k
 
 Same technique as the S-tree: load 16 keys, compare against the search key, count how many are ≤ the key, use that count as the child index:
 
-```c
-int search_node(BMinusNode *node, int key) {
-    __m512i keys = _mm512_loadu_si512(node->keys);
-    __m512i vkey = _mm512_set1_epi32(key);
-    __mmask16 mask = _mm512_cmple_epi32_mask(keys, vkey);
-    return __builtin_popcount(mask);  // 0..16: which child to descend into
+```rust
+use std::arch::x86_64::*;
+
+fn search_node(node: *const BMinusNode, key: i32) -> usize {
+    unsafe {
+        let keys = _mm512_loadu_si512(&(*node).keys as *const i32 as *const __m512i);
+        let vkey = _mm512_set1_epi32(key);
+        let mask = _mm512_cmple_epi32_mask(keys, vkey);
+        (mask as u16).count_ones() as usize
+    }
 }
 ```
 
@@ -38,13 +43,17 @@ Returns 0..16: the index of the child pointer to follow (or the insertion positi
 
 Without AVX-512, use AVX2 with 8 keys per node:
 
-```c
-int search_node_avx2(BMinusNode *node, int key) {
-    __m256i keys = _mm256_loadu_si256((__m256i*)node->keys);
-    __m256i vkey = _mm256_set1_epi32(key);
-    __m256i cmp = _mm256_cmpgt_epi32(vkey, keys);
-    int mask = _mm256_movemask_ps(_mm256_castsi256_ps(cmp));
-    return __builtin_popcount(mask);
+```rust
+use std::arch::x86_64::*;
+
+fn search_node_avx2(node: *const BMinusNode, key: i32) -> usize {
+    unsafe {
+        let keys = _mm256_loadu_si256(&(*node).keys as *const i32 as *const __m256i);
+        let vkey = _mm256_set1_epi32(key);
+        let cmp = _mm256_cmpgt_epi32(vkey, keys);
+        let mask = _mm256_movemask_ps(_mm256_castsi256_ps(cmp));
+        (mask as u32).count_ones() as usize
+    }
 }
 ```
 
@@ -52,23 +61,28 @@ B = 8 means the node fits in 32 bytes (keys) + 36 bytes (9 children × 4) = 68 b
 
 ## Lookup
 
-```c
-int bminus_lookup(BMinusTree *tree, int key) {
-    if (tree->root == -1) return -1;
-    
-    int node_idx = tree->root;
-    while (true) {
-        BMinusNode *node = &tree->nodes[node_idx];
-        int child = search_node(node, key);
-        
-        if (node->is_leaf) {
-            // Check if the key at position 'child' matches
-            if (child > 0 && node->keys[child - 1] == key)
-                return node->values[child - 1];  // Found
-            return -1;  // Not found
+```rust
+fn bminus_lookup(tree: *const BMinusTree, key: i32) -> i32 {
+    let root = unsafe { (*tree).root };
+    if root == -1 {
+        return -1;
+    }
+
+    let mut node_idx = root;
+    loop {
+        unsafe {
+            let node = &(*tree).nodes.add(node_idx as usize) as *const BMinusNode;
+            let child = search_node(node, key);
+
+            if (*node).is_leaf {
+                if child > 0 && *(*node).keys.as_ptr().add(child - 1) == key {
+                    return *(*node).values.as_ptr().add(child - 1);
+                }
+                return -1;
+            }
+
+            node_idx = *(*node).children.as_ptr().add(child);
         }
-        
-        node_idx = node->children[child];
     }
 }
 ```
@@ -81,37 +95,45 @@ Inserting into a sorted array of 16 keys normally requires shifting elements: `m
 
 The **mask-store trick** uses SIMD to shift in-register:
 
-```c
-void insert_key_simd(int *keys, int num_keys, int pos, int new_key) {
-    // Load the existing keys
-    __m512i v = _mm512_loadu_si512(keys);
-    
-    // Create a mask: which lanes should contain the shifted values?
-    // Lanes 0..pos-1: unchanged (mask = 1)
-    // Lane pos: new key (mask = 0, handled separately)
-    // Lanes pos..14: shifted right by 1 (get value from lane-1)
-    
-    // Approach: use valign to shift part of the vector
-    // Or: use mask_store to selectively write
+```rust
+use std::arch::x86_64::*;
+
+fn insert_key_simd(keys: *mut i32, num_keys: usize, pos: usize, new_key: i32) {
+    unsafe {
+        let v = _mm512_loadu_si512(keys as *const __m512i);
+
+        // Create a mask: which lanes should contain the shifted values?
+        // Lanes 0..pos-1: unchanged (mask = 1)
+        // Lane pos: new key (mask = 0, handled separately)
+        // Lanes pos..14: shifted right by 1 (get value from lane-1)
+
+        // Approach: use valign to shift part of the vector
+        // Or: use mask_store to selectively write
+    }
 }
 ```
 
 Better approach using `_mm512_mask_compressstoreu_epi32` (AVX-512F) or explicit permutation:
 
-```c
-void insert_key_avx512(int *keys, int n, int pos, int new_key) {
-    __m512i v = _mm512_loadu_si512(keys);
-    
-    // Create a shift-permute: insert the new key and shift the rest
-    // Use valignd: shift right by 1, then blend in the new key
-    __m512i shifted = _mm512_alignr_epi32(
-        _mm512_set1_epi32(new_key), v, 1  // v shifted right, new_key fills in front
-    );
-    // Actually valignd concatenates two vectors and extracts a 512-bit window.
-    // To shift right: concatenate [new_key, v[0], ..., v[14]] with v[15] dropped.
-    
-    __m512i v_shifted = _mm512_mask_alignr_epi32(v, mask, v, v, 1);
-    // This is getting complicated. Simpler: use permutexvar.
+```rust
+use std::arch::x86_64::*;
+
+fn insert_key_avx512(keys: *mut i32, n: usize, pos: usize, new_key: i32) {
+    unsafe {
+        let v = _mm512_loadu_si512(keys as *const __m512i);
+
+        // Create a shift-permute: insert the new key and shift the rest
+        // Use valignd: shift right by 1, then blend in the new key
+        let shifted = _mm512_alignr_epi32(
+            _mm512_set1_epi32(new_key),
+            v,
+            1,
+        );
+        // Actually valignd concatenates two vectors and extracts a 512-bit window.
+        // To shift right: concatenate [new_key, v[0], ..., v[14]] with v[15] dropped.
+
+        // This is getting complicated. Simpler: use permutexvar.
+    }
 }
 ```
 
@@ -123,48 +145,70 @@ For B⁻ trees, the mask-store trick is more pedagogical than practical. A 16-el
 
 When a node reaches B keys and we need to insert one more:
 
-```c
-void split_child(BMinusTree *tree, int parent_idx, int child_pos) {
-    BMinusNode *parent = &tree->nodes[parent_idx];
-    int child_idx = parent->children[child_pos];
-    BMinusNode *child = &tree->nodes[child_idx];
-    
-    // Create a new node
-    int new_idx = tree->nodes.size();
-    tree->nodes.push_back({.is_leaf = child->is_leaf});
-    BMinusNode *new_node = &tree->nodes.back();
-    
-    // Move the upper half of child's keys to new_node
-    int mid = child->num_keys / 2;
-    int mid_key = child->keys[mid];
-    
-    new_node->num_keys = child->num_keys - mid - 1;
-    memcpy(new_node->keys, &child->keys[mid + 1], new_node->num_keys * 4);
-    if (!child->is_leaf)
-        memcpy(new_node->children, &child->children[mid + 1], (new_node->num_keys + 1) * 4);
-    
-    child->num_keys = mid;
-    
-    // Insert mid_key into parent
-    insert_key_simd(parent->keys, parent->num_keys, child_pos, mid_key);
-    // Shift parent's children
-    memmove(&parent->children[child_pos + 2], &parent->children[child_pos + 1],
-            (parent->num_keys - child_pos) * 4);
-    parent->children[child_pos + 1] = new_idx;
-    parent->num_keys++;
-    
-    // If parent overflows, split it recursively
-    if (parent->num_keys == B) {
-        if (parent_idx == tree->root) {
-            // Create new root
-            int new_root = tree->nodes.size();
-            tree->nodes.push_back({.is_leaf = false});
-            tree->nodes[new_root].children[0] = parent_idx;
-            split_child(tree, new_root, 0);
-            tree->root = new_root;
-        } else {
-            // Find parent's parent and split
-            split_parent(tree, parent_idx);
+```rust
+use std::alloc::{alloc, dealloc, Layout};
+use libc::memcpy;
+
+fn split_child(tree: *mut BMinusTree, parent_idx: i32, child_pos: usize) {
+    unsafe {
+        let parent = &mut *tree.as_mut().unwrap().nodes.add(parent_idx as usize);
+        let child_idx = parent.children[child_pos];
+        let child = &mut *tree.as_mut().unwrap().nodes.add(child_idx as usize);
+
+        // Create a new node
+        let new_idx = tree.as_ref().unwrap().num_nodes as i32;
+        tree.as_mut().unwrap().num_nodes += 1;
+        let new_node = &mut *tree.as_mut().unwrap().nodes.add(new_idx as usize);
+        new_node.is_leaf = child.is_leaf;
+
+        let mid = child.num_keys as usize / 2;
+        let mid_key = child.keys[mid];
+
+        new_node.num_keys = child.num_keys - mid as i32 - 1;
+        memcpy(
+            new_node.keys.as_mut_ptr() as *mut libc::c_void,
+            child.keys.as_ptr().add(mid + 1) as *const libc::c_void,
+            (new_node.num_keys as usize) * 4,
+        );
+        if !child.is_leaf {
+            memcpy(
+                new_node.children.as_mut_ptr() as *mut libc::c_void,
+                child.children.as_ptr().add(mid + 1) as *const libc::c_void,
+                (new_node.num_keys as usize + 1) * 4,
+            );
+        }
+
+        child.num_keys = mid as i32;
+
+        // Insert mid_key into parent
+        insert_key_simd(
+            parent.keys.as_mut_ptr(),
+            parent.num_keys as usize,
+            child_pos,
+            mid_key,
+        );
+        // Shift parent's children
+        libc::memmove(
+            parent.children.as_mut_ptr().add(child_pos + 2) as *mut libc::c_void,
+            parent.children.as_ptr().add(child_pos + 1) as *const libc::c_void,
+            (parent.num_keys as usize - child_pos) * 4,
+        );
+        parent.children[child_pos + 1] = new_idx;
+        parent.num_keys += 1;
+
+        // If parent overflows, split it recursively
+        if parent.num_keys == B {
+            if parent_idx == tree.as_ref().unwrap().root {
+                // Create new root
+                let new_root = tree.as_ref().unwrap().num_nodes as i32;
+                tree.as_mut().unwrap().num_nodes += 1;
+                tree.as_mut().unwrap().nodes.add(new_root as usize).as_mut().unwrap().is_leaf = false;
+                tree.as_mut().unwrap().nodes.add(new_root as usize).children[0] = parent_idx;
+                split_child(tree, new_root, 0);
+                tree.as_mut().unwrap().root = new_root;
+            } else {
+                split_parent(tree, parent_idx);
+            }
         }
     }
 }

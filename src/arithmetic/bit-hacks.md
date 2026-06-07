@@ -8,9 +8,9 @@ Before SIMD instructions, clever programmers packed multiple values into a singl
 
 **Example: Detect if any byte in a 64-bit word is zero:**
 
-```c
-uint64_t has_zero_byte(uint64_t x) {
-    return (x - 0x0101010101010101ull) & ~x & 0x8080808080808080ull;
+```rust
+fn has_zero_byte(x: u64) -> u64 {
+    (x.wrapping_sub(0x0101010101010101u64)) & !x & 0x8080808080808080u64
 }
 ```
 
@@ -23,13 +23,14 @@ This is how `strlen` and `strchr` can scan 8 bytes at a time without SIMD. It's 
 
 **Example: Population count (SWAR):**
 
-```c
-uint64_t popcnt_swar(uint64_t x) {
-    x = (x & 0x5555555555555555ull) + ((x >> 1) & 0x5555555555555555ull);
-    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
-    x = (x & 0x0F0F0F0F0F0F0F0Full) + ((x >> 4) & 0x0F0F0F0F0F0F0F0Full);
-    x = (x * 0x0101010101010101ull) >> 56;
-    return x;
+```rust
+fn popcnt_swar(x: u64) -> u64 {
+    let mut x = x;
+    x = (x & 0x5555555555555555u64) + ((x >> 1) & 0x5555555555555555u64);
+    x = (x & 0x3333333333333333u64) + ((x >> 2) & 0x3333333333333333u64);
+    x = (x & 0x0F0F0F0F0F0F0F0Fu64) + ((x >> 4) & 0x0F0F0F0F0F0F0F0Fu64);
+    x = (x.wrapping_mul(0x0101010101010101u64)) >> 56;
+    x
 }
 ```
 
@@ -39,13 +40,14 @@ On modern hardware, use `__builtin_popcountll` — it compiles to the `popcnt` i
 
 Reversing the bits of a word (bit 0 becomes bit 63, bit 1 becomes bit 62, etc.):
 
-```c
-uint64_t reverse_bits(uint64_t x) {
-    x = ((x & 0x5555555555555555ull) << 1) | ((x >> 1) & 0x5555555555555555ull);
-    x = ((x & 0x3333333333333333ull) << 2) | ((x >> 2) & 0x3333333333333333ull);
-    x = ((x & 0x0F0F0F0F0F0F0F0Full) << 4) | ((x >> 4) & 0x0F0F0F0F0F0F0F0Full);
-    x = __builtin_bswap64(x);  // Reverse bytes (hardware instruction)
-    return x;
+```rust
+fn reverse_bits(x: u64) -> u64 {
+    let mut x = x;
+    x = ((x & 0x5555555555555555u64) << 1) | ((x >> 1) & 0x5555555555555555u64);
+    x = ((x & 0x3333333333333333u64) << 2) | ((x >> 2) & 0x3333333333333333u64);
+    x = ((x & 0x0F0F0F0F0F0F0F0Fu64) << 4) | ((x >> 4) & 0x0F0F0F0F0F0F0F0Fu64);
+    x = x.swap_bytes();  // Reverse bytes (hardware instruction)
+    x
 }
 ```
 
@@ -55,16 +57,17 @@ Bit reversal is needed for FFT bit-reversal permutation and some CRC algorithms.
 
 Round up to the next power of two:
 
-```c
-uint64_t next_pow2(uint64_t x) {
-    x--;
+```rust
+fn next_pow2(x: u64) -> u64 {
+    let mut x = x;
+    x = x.wrapping_sub(1);
     x |= x >> 1;
     x |= x >> 2;
     x |= x >> 4;
     x |= x >> 8;
     x |= x >> 16;
     x |= x >> 32;
-    return x + 1;
+    x.wrapping_add(1)
 }
 ```
 
@@ -74,23 +77,23 @@ This "smears" the highest set bit across all lower bits, then adds 1. Branchless
 
 Isolate the least significant set bit:
 
-```c
-x & -x  // LSB isolation (two's complement: -x = ~x + 1)
+```rust
+x & x.wrapping_neg()  // LSB isolation (two's complement: -x = ~x + 1)
 ```
 
 Example: `x = 0b101100`, `x & -x = 0b000100`. Used in Fenwick trees (binary indexed trees), sparse bitsets, and the `blsi` instruction.
 
 Clear the LSB:
-```c
-x & (x - 1)  // Clears lowest set bit
+```rust
+x & (x.wrapping_sub(1))  // Clears lowest set bit
 ```
 
 Used to iterate over set bits:
-```c
-while (x) {
-    uint64_t lsb = x & -x;
-    process(ctz(lsb));  // ctz = count trailing zeros (tzcnt instruction)
-    x &= x - 1;
+```rust
+while x != 0 {
+    let lsb = x & x.wrapping_neg();
+    process(lsb.trailing_zeros());  // ctz = count trailing zeros (tzcnt instruction)
+    x &= x.wrapping_sub(1);
 }
 ```
 
@@ -98,12 +101,12 @@ while (x) {
 
 Modern x86 has `bextr` and `bzhi` (BMI1/BMI2) for fast bitfield operations:
 
-```c
+```rust
 // Extract bits [start, start+len) from x
-uint64_t result = _bextr_u64(x, start, len);
+let result = (x >> start) & ((1u64 << len) - 1);
 
 // Zero high bits starting at position
-uint64_t result = _bzhi_u64(x, position);
+let result = x & ((1u64 << position) - 1);
 ```
 
 These are single-cycle operations. Use the intrinsics directly when manipulating packed bitfields — much faster than shift-mask sequences.

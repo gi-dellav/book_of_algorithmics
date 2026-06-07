@@ -8,12 +8,14 @@ Given a 64-bit composite integer N, find a non-trivial factor (or prove N is pri
 
 ## Stage 1: Trial Division
 
-```c
-uint64_t factor_trial(uint64_t n) {
-    for (uint64_t d = 2; d * d <= n; d++) {
-        if (n % d == 0) return d;
+```rust
+fn factor_trial(n: u64) -> u64 {
+    let mut d: u64 = 2;
+    while d * d <= n {
+        if n % d == 0 { return d; }
+        d += 1;
     }
-    return n;  // n is prime
+    n  // n is prime
 }
 ```
 
@@ -25,12 +27,14 @@ This checks every integer up to √N. For N ≈ 2^60, √N ≈ 2^30 ≈ 10^9. At
 
 Instead of checking every integer, check only primes. Precompute all primes up to 10^6 using the Sieve of Eratosthenes (takes a few milliseconds at startup):
 
-```c
-uint64_t factor_primes(uint64_t n) {
-    for (int i = 0; primes[i] * primes[i] <= n; i++) {
-        if (n % primes[i] == 0) return primes[i];
+```rust
+fn factor_primes(n: u64, primes: &[u64]) -> u64 {
+    let mut i = 0;
+    while primes[i] * primes[i] <= n {
+        if n % primes[i] == 0 { return primes[i]; }
+        i += 1;
     }
-    return n;
+    n
 }
 ```
 
@@ -40,9 +44,9 @@ For N ≈ 2^60, we need primes up to 2^30. There are ~50 million primes below 2^
 
 Skip numbers divisible by small primes using a "wheel." A 2,3,5-wheel skips multiples of 2, 3, and 5 — only 8 out of every 30 numbers need to be tested:
 
-```c
+```rust
 // Increments for a 2,3,5-wheel:
-const uint8_t wheel[] = {4, 2, 4, 2, 4, 6, 2, 6};
+const WHEEL: [u8; 8] = [4, 2, 4, 2, 4, 6, 2, 6];
 // After starting at d=7, add wheel[i % 8] to get the next candidate
 ```
 
@@ -59,16 +63,19 @@ x_{i+1} = (x_i² + 1) mod N
 
 Then compute `gcd(|x_{2i} − x_i|, N)` at each step. If `x_{2i} ≡ x_i (mod p)` (they're equal modulo p but not modulo N), the gcd will reveal p.
 
-```c
-uint64_t pollard_rho(uint64_t n) {
-    uint64_t x = 2, y = 2, d = 1;
-    while (d == 1) {
-        x = ((__int128)x * x + 1) % n;      // x = f(x)
-        y = ((__int128)y * y + 1) % n;      // y = f(f(y))
-        y = ((__int128)y * y + 1) % n;
-        d = gcdll(abs_diff(x, y), n);
+```rust
+fn pollard_rho(n: u64) -> u64 {
+    let mut x: u64 = 2;
+    let mut y: u64 = 2;
+    let mut d: u64 = 1;
+    while d == 1 {
+        x = ((x as u128 * x as u128 + 1) % n as u128) as u64;   // x = f(x)
+        y = ((y as u128 * y as u128 + 1) % n as u128) as u64;   // y = f(f(y))
+        y = ((y as u128 * y as u128 + 1) % n as u128) as u64;
+        let diff = if x > y { x - y } else { y - x };
+        d = gcd_binary(diff, n);
     }
-    return (d == n) ? 0 : d;  // 0 = failure, retry with different f(x)
+    if d == n { 0 } else { d }  // 0 = failure, retry with different f(x)
 }
 ```
 
@@ -80,15 +87,18 @@ Pollard's rho is the first algorithm that actually works for 60-bit numbers. Spe
 
 Richard Brent (1980) observed that computing `gcd` at every step is wasteful — `gcd` is relatively expensive. Instead, accumulate the product of several differences and take the gcd periodically:
 
-```c
-uint64_t pollard_brent(uint64_t n) {
-    uint64_t y = 2, c = 1, m = 128;
-    uint64_t x, k, ys, d, r, q;
-    
-    for (int attempt = 0; attempt < 10; attempt++) {
+```rust
+fn pollard_brent(n: u64) -> u64 {
+    let mut y: u64 = 2;
+    let mut c: u64 = 1;
+    let m: u64 = 128;
+
+    for _attempt in 0..10 {
         // ... (Brent's cycle-finding with product accumulation)
         // Compute gcd every 128 steps, using the product of 128 differences
     }
+
+    0 // placeholder
 }
 ```
 

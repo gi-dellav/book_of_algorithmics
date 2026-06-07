@@ -22,15 +22,15 @@ x / c ≈ (x * m) >> (n + s)
 ```
 where `m = ⌈2^(n+s) / c⌉` is a precomputed "magic number" and `s` is chosen to give enough precision.
 
-```c
+```rust
 // The compiler turns this:
-int div_by_10(int x) { return x / 10; }
+fn div_by_10(x: u32) -> u32 { x / 10 }
 
 // Into something like:
-int div_by_10(int x) {
+fn div_by_10(x: u32) -> u32 {
     // magic = 0xCCCCCCCD (for 32-bit unsigned)
-    uint64_t t = ((uint64_t)x * 0xCCCCCCCDull) >> 32;
-    return t >> 3;
+    let t: u64 = ((x as u64) * 0xCCCCCCCDu64) >> 32;
+    (t >> 3) as u32
 }
 ```
 
@@ -42,23 +42,23 @@ For signed division, the compiler adds a correction term to handle negative numb
 
 When the divisor is not a compile-time constant but you need to divide many numbers by the same divisor, you can precompute a magic number once and reuse it:
 
-```c
+```rust
 // Precompute magic for divisor d
-uint64_t precompute_barrett(uint64_t d) {
-    return (__int128)(-1) / d + 1;  // ceil(2^128 / d) without overflow
+fn precompute_barrett(d: u64) -> u64 {
+    ((u128::MAX) / d as u128 + 1) as u64  // ceil(2^128 / d) without overflow
 }
 
 // Divide x by d using the precomputed magic
-uint64_t barrett_reduce(uint64_t x, uint64_t d, uint64_t magic) {
-    __int128 t = (__int128)x * magic;
-    uint64_t q = t >> 64;  // Quotient = high 64 bits of product
+fn barrett_reduce(x: u64, d: u64, magic: u64) -> u64 {
+    let t: u128 = (x as u128) * (magic as u128);
+    let mut q: u64 = (t >> 64) as u64;  // Quotient = high 64 bits of product
     // q might be off by 1; correct if needed
-    uint64_t r = x - q * d;
-    if (r >= d) {
-        q++;
+    let mut r = x - q * d;
+    if r >= d {
+        q += 1;
         r -= d;
     }
-    return q;  // or return r for modulo
+    q  // or return r for modulo
 }
 ```
 
@@ -68,13 +68,13 @@ The Barrett reduction computes `x / d` as `⌊x × (2^128 / d) / 2^128⌋`. The 
 
 Daniel Lemire discovered an even faster reduction when both the division and modulo are needed, or when the numbers are small enough:
 
-```c
+```rust
 // Lemire's fast modulo: compute x % d without division
 // Assumes d < 2^32 and we only need the remainder
-uint32_t lemire_mod(uint32_t x, uint32_t d) {
-    uint64_t magic = ((__int128)1 << 64) / d + 1;
-    uint64_t lowbits = (uint64_t)x * magic;
-    return ((__int128)lowbits * d) >> 64;
+fn lemire_mod(x: u32, d: u32) -> u32 {
+    let magic: u64 = ((1u128 << 64) / d as u128 + 1) as u64;
+    let lowbits: u64 = (x as u64) * magic;
+    ((lowbits as u128 * d as u128) >> 64) as u32
 }
 ```
 

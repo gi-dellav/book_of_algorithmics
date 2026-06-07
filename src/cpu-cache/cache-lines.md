@@ -4,14 +4,19 @@ The fundamental unit of data transfer between caches and memory is the **cache l
 
 ## The Experiment
 
-```c
-int n = 64 * 1024 * 1024;  // 64M elements
-int *a = malloc(n * sizeof(int));
+```rust
+let n: usize = 64 * 1024 * 1024;  // 64M elements
+let mut a: Vec<i32> = vec![0; n];
 
 // Access every element with stride S
-for (int stride = 1; stride <= 256; stride *= 2) {
-    for (int i = 0; i < n; i += stride)
-        a[i]++;  // One read-modify-write per stride elements
+let mut stride = 1;
+while stride <= 256 {
+    let mut i = 0;
+    while i < n {
+        a[i] += 1;  // One read-modify-write per stride elements
+        i += stride;
+    }
+    stride *= 2;
 }
 ```
 

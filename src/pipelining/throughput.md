@@ -8,25 +8,29 @@ This is the single most practical technique in this chapter. It turns latency-bo
 
 Consider summing an array:
 
-```c
-float sum = 0;
-for (int i = 0; i < n; i++)
+```rust
+let mut sum: f32 = 0.0;
+for i in 0..n {
     sum += a[i];
+}
 ```
 
 Each iteration adds one element to `sum`. The next addition depends on the result of the previous one — a true data dependency (RAW hazard). The loop is **latency-bound**: it can execute at most one addition per 3 cycles (float add latency).
 
 Unroll and use multiple accumulators:
 
-```c
-float sum0 = 0, sum1 = 0, sum2 = 0, sum3 = 0;
-for (int i = 0; i < n; i += 4) {
+```rust
+let mut sum0 = 0.0f32;
+let mut sum1 = 0.0f32;
+let mut sum2 = 0.0f32;
+let mut sum3 = 0.0f32;
+for i in (0..n).step_by(4) {
     sum0 += a[i];
     sum1 += a[i+1];
     sum2 += a[i+2];
     sum3 += a[i+3];
 }
-float sum = (sum0 + sum1) + (sum2 + sum3);
+let sum = (sum0 + sum1) + (sum2 + sum3);
 ```
 
 Now the four additions per iteration are *independent* — the CPU can execute them in parallel on different execution units. The loop becomes **throughput-bound**: limited by how fast the CPU can start new additions, not how fast each one completes.
@@ -50,10 +54,11 @@ Loop unrolling and multiple accumulators serve different purposes:
 
 The two techniques synergize: unroll enough to feed all accumulators each iteration without excessive loop overhead.
 
-```c
+```rust
 // Unrolled 8×, 8 accumulators — saturates Zen 2 FMA pipes:
-float s0=0, s1=0, s2=0, s3=0, s4=0, s5=0, s6=0, s7=0;
-for (int i = 0; i < n; i += 8) {
+let mut s0 = 0.0f32; let mut s1 = 0.0f32; let mut s2 = 0.0f32; let mut s3 = 0.0f32;
+let mut s4 = 0.0f32; let mut s5 = 0.0f32; let mut s6 = 0.0f32; let mut s7 = 0.0f32;
+for i in (0..n).step_by(8) {
     s0 += a[i];   s1 += a[i+1];
     s2 += a[i+2]; s3 += a[i+3];
     s4 += a[i+4]; s5 += a[i+5];
@@ -72,20 +77,22 @@ For any reduction loop (sum, product, min, max, bitwise AND):
 3. Use at least `L × T` accumulators.
 4. Unroll to feed those accumulators each iteration and amortize loop overhead.
 
-```c
+```rust
 // Generic reduction template
-#define UNROLL 8
-#define ACCUM 8
-float acc[ACCUM] = {0};
-for (int i = 0; i < n - UNROLL + 1; i += UNROLL) {
-    for (int j = 0; j < UNROLL; j++)
+const UNROLL: usize = 8;
+const ACCUM: usize = 8;
+let mut acc = [0.0f32; ACCUM];
+for i in (0..n - UNROLL + 1).step_by(UNROLL) {
+    for j in 0..UNROLL {
         acc[j % ACCUM] += a[i + j];
+    }
 }
 // Handle remainder
 // Combine accumulators
-float result = 0;
-for (int j = 0; j < ACCUM; j++)
+let mut result = 0.0f32;
+for j in 0..ACCUM {
     result += acc[j];
+}
 ```
 
 ## The Critical Path as a DAG

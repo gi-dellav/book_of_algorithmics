@@ -6,45 +6,46 @@ Modern CPUs execute billions of instructions per second. To keep the pipeline fu
 
 This is the experiment that first made branch prediction visceral for a generation of programmers. It's been passed around Stack Overflow, blog posts, and conference talks. We'll run it ourselves.
 
-```c
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
+```rust
+use std::time::Instant;
 
-int main() {
-    const int n = 32768;
-    int *a = malloc(n * sizeof(int));
+fn main() {
+    const N: usize = 32768;
+    let mut a: Vec<i32> = vec![0; N];
     
-    // Fill array with random numbers
-    for (int i = 0; i < n; i++)
-        a[i] = rand() % 256;
+    // Fill array with pseudo-random numbers (inline LCG, no external crate)
+    for i in 0..N {
+        a[i] = ((i.wrapping_mul(1103515245).wrapping_add(12345)) >> 16) as i32 % 256;
+    }
     
     // Sum elements greater than 128
-    long long sum = 0;
-    clock_t start = clock();
-    for (int i = 0; i < 100000; i++) {
-        for (int j = 0; j < n; j++) {
-            if (a[j] > 128)
-                sum += a[j];
+    let mut sum: i64 = 0;
+    let start = Instant::now();
+    for _ in 0..100000 {
+        for j in 0..N {
+            if a[j] > 128 {
+                sum += a[j] as i64;
+            }
         }
     }
-    clock_t end = clock();
-    printf("Unsorted: %f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
+    let elapsed_unsorted = start.elapsed();
+    println!("Unsorted: {:?}", elapsed_unsorted);
     
     // Sort the array
-    qsort(a, n, sizeof(int), (int(*)(const void*, const void*))cmp);
+    a.sort_unstable();
     
     // Repeat with sorted array
     sum = 0;
-    start = clock();
-    for (int i = 0; i < 100000; i++) {
-        for (int j = 0; j < n; j++) {
-            if (a[j] > 128)
-                sum += a[j];
+    let start = Instant::now();
+    for _ in 0..100000 {
+        for j in 0..N {
+            if a[j] > 128 {
+                sum += a[j] as i64;
+            }
         }
     }
-    end = clock();
-    printf("Sorted: %f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
+    let elapsed_sorted = start.elapsed();
+    println!("Sorted: {:?}", elapsed_sorted);
 }
 ```
 

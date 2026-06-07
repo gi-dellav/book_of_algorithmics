@@ -38,17 +38,18 @@ Zen 4 handles AVX-512 differently: it executes 512-bit instructions on two 256-b
 
 SIMD is data parallelism: the same operation is applied to multiple data elements simultaneously. A SIMD register holds a small fixed-size vector; SIMD instructions operate on entire vectors.
 
-```c
+```rust
 // Scalar:
-for (int i = 0; i < n; i++)
+for i in 0..n {
     c[i] = a[i] + b[i];
+}
 
 // SIMD conceptual model:
-for (int i = 0; i < n; i += 8) {
-    float_vector8 va = load(a + i);
-    float_vector8 vb = load(b + i);
-    float_vector8 vc = va + vb;  // 8 additions in one instruction
-    store(c + i, vc);
+for i in (0..n).step_by(8) {
+    let va = load_f32x8(&a[i..]);
+    let vb = load_f32x8(&b[i..]);
+    let vc = va + vb;  // 8 additions in one instruction
+    store_f32x8(&mut c[i..], vc);
 }
 ```
 

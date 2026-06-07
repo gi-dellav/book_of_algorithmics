@@ -6,11 +6,14 @@ Here is the single most important demonstration in this book. We will run matrix
 
 We multiply two n × n matrices A and B to produce C = A × B. The inner loop does this:
 
-```c
-for (int i = 0; i < n; i++)
-    for (int j = 0; j < n; j++)
-        for (int k = 0; k < n; k++)
-            C[i][j] += A[i][k] * B[k][j];
+```rust
+for i in 0..n {
+    for k in 0..n {
+        for j in 0..n {
+            c[i][j] += a[i][k] * b[k][j];
+        }
+    }
+}
 ```
 
 The operation count is exactly 2n³ floating-point operations (n³ multiplies + n³ adds). All versions do the same math. The only difference is how the code is compiled, optimized, and executed.
@@ -55,11 +58,14 @@ PyPy uses tracing JIT compilation to optimize Python bytecode. It achieves rough
 
 ## C with `-O3`
 
-```c
-for (int i = 0; i < n; i++)
-    for (int j = 0; j < n; j++)
-        for (int k = 0; k < n; k++)
-            C[i][j] += A[i][k] * B[k][j];
+```rust
+for i in 0..n {
+    for j in 0..n {
+        for k in 0..n {
+            c[i][j] += a[i][k] * b[k][j];
+        }
+    }
+}
 ```
 
 Compiled with `gcc -O3`:
@@ -80,11 +86,14 @@ The compiler now uses AVX2 instructions (8 floats at a time), reorders floating-
 
 ## C with Cache Optimization (Loop Reordering)
 
-```c
-for (int i = 0; i < n; i++)
-    for (int k = 0; k < n; k++)
-        for (int j = 0; j < n; j++)
-            C[i][j] += A[i][k] * B[k][j];
+```rust
+for i in 0..n {
+    for j in 0..n {
+        for k in 0..n {
+            c[i][j] += a[i][k] * b[k][j];
+        }
+    }
+}
 ```
 
 Swapping the j and k loops makes the inner loop access `C[i][j]` and `B[k][j]` sequentially — both are streaming through contiguous memory. The compiler can vectorize this.
@@ -97,9 +106,13 @@ A 3.3× improvement over the naive loop order, just from fixing the memory acces
 
 ## BLAS (OpenBLAS)
 
-```c
-cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-            n, n, n, 1.0f, A, n, B, n, 0.0f, C, n);
+```rust
+unsafe {
+    cblas_sgemm(
+        CblasRowMajor, CblasNoTrans, CblasNoTrans,
+        n, n, n, 1.0, A.as_ptr(), n as i32, B.as_ptr(), n as i32, 0.0, C.as_mut_ptr(), n as i32,
+    );
+}
 ```
 
 **Time: ~0.12 seconds. Performance: ~18 GFLOPS.**

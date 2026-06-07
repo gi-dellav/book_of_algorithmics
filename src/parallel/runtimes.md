@@ -6,10 +6,12 @@ Threading runtimes are the infrastructure between your code and `pthread_create`
 
 OpenMP is a compiler-based runtime. You annotate loops and regions with pragmas; the compiler generates the threading code.
 
-```c
-#pragma omp parallel for
-for (int i = 0; i < N; i++)
+```rust
+use rayon::prelude::*;
+
+(0..N).into_par_iter().for_each(|i| {
     a[i] = b[i] + c[i];
+});
 ```
 
 OpenMP maintains a thread pool. On first entering a parallel region, threads are forked. On exit, they spin-wait (not sleep) for the next parallel region. This amortizes thread creation cost across the program's lifetime.
@@ -23,32 +25,28 @@ OpenMP maintains a thread pool. On first entering a parallel region, threads are
 
 TBB is a C++ library that provides high-level parallel patterns:
 
-```cpp
+```rust
+use rayon::prelude::*;
+
 // Parallel for
-tbb::parallel_for(0, N, [&](int i) {
+(0..N).into_par_iter().for_each(|i| {
     a[i] = b[i] + c[i];
 });
 
 // Parallel reduce
-int sum = tbb::parallel_reduce(
-    tbb::blocked_range<int>(0, N), 0,
-    [&](const tbb::blocked_range<int>& r, int local_sum) {
-        for (int i = r.begin(); i < r.end(); i++)
-            local_sum += a[i];
-        return local_sum;
-    },
-    std::plus<int>()
-);
+let sum = a.par_iter().sum();
 
 // Pipeline
-tbb::parallel_pipeline(/* tokens */ 8,
-    tbb::make_filter<void, Data>(tbb::filter::serial_in_order,
-        [&](tbb::flow_control& fc) -> Data { return read_next(); }) &
-    tbb::make_filter<Data, Result>(tbb::filter::parallel,
-        [&](Data d) -> Result { return process(d); }) &
-    tbb::make_filter<Result, void>(tbb::filter::serial_in_order,
-        [&](Result r) { write_result(r); })
-);
+let (tx1, rx1) = std::sync::mpsc::channel();
+let (tx2, rx2) = std::sync::mpsc::channel();
+
+std::thread::spawn(move || {
+    while let Some(data) = read_next() { tx1.send(data).ok(); }
+});
+std::thread::spawn(move || {
+    for data in rx1 { tx2.send(process(data)).ok(); }
+});
+for result in rx2 { write_result(result); }
 ```
 
 TBB uses **work stealing**: each thread has a local deque of tasks. When a thread's deque is empty, it steals from another thread's deque. This is the same algorithm as Go's goroutine scheduler and Cilk (the original work-stealing language from MIT, 1994).
@@ -63,13 +61,14 @@ Brent's theorem: execution time on P processors is bounded by `Tₚ ≤ T₁/P +
 
 Cilk's `spawn` and `sync` model:
 
-```c
-cilk int fib(int n) {
-    if (n < 2) return n;
-    int x = cilk_spawn fib(n-1);  // Spawn: this can run in parallel
-    int y = fib(n-2);              // This runs in the current thread
-    cilk_sync;                     // Wait for spawned children
-    return x + y;
+```rust
+fn fib(n: i32) -> i32 {
+    if n < 2 { return n; }
+    let (x, y) = rayon::join(
+        || fib(n - 1),  // This can run in parallel
+        || fib(n - 2),  // This runs in the current thread
+    );
+    x + y
 }
 ```
 

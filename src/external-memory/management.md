@@ -6,11 +6,14 @@ Every program allocates memory. How it does so — through `malloc`, `new`, cust
 
 glibc's `malloc` (ptmalloc2) is the default on Linux. It's a general-purpose allocator optimized for a wide range of workloads:
 
-```c
-void *ptr = malloc(size);
-free(ptr);
-void *ptr2 = realloc(ptr, new_size);
-void *ptr3 = calloc(count, size);  // Allocate and zero
+```rust
+use std::alloc::{alloc, dealloc, realloc, alloc_zeroed, Layout};
+
+let layout = Layout::from_size_align(size, 1).unwrap();
+let ptr = unsafe { alloc(layout) };
+unsafe { dealloc(ptr, layout) };
+let ptr2 = unsafe { realloc(ptr, layout, new_size) };
+let ptr3 = unsafe { alloc_zeroed(Layout::from_size_align(count * size, 1).unwrap()) };  // Allocate and zero
 ```
 
 Internally, ptmalloc uses:
@@ -35,14 +38,20 @@ Internally, ptmalloc uses:
 When the general-purpose allocator doesn't meet your needs:
 
 **Arena allocator**: Allocate a large block once, then "allocate" by bumping a pointer.
-```c
-typedef struct { char *base; char *current; char *end; } Arena;
+```rust
+struct Arena {
+    base: *mut u8,
+    current: *mut u8,
+    end: *mut u8,
+}
 
-void *arena_alloc(Arena *a, size_t size) {
-    if (a->current + size > a->end) return NULL;
-    void *ptr = a->current;
-    a->current += size;
-    return ptr;
+fn arena_alloc(a: &mut Arena, size: usize) -> *mut u8 {
+    if unsafe { a.current.add(size) } > a.end {
+        return std::ptr::null_mut();
+    }
+    let ptr = a.current;
+    unsafe { a.current = a.current.add(size) };
+    ptr
 }
 ```
 Allocation is ~2 cycles (pointer bump + bounds check). Freeing is a no-op (the entire arena is freed at once). Perfect for per-frame allocations in game engines, per-request allocations in web servers, or any scoped computation.

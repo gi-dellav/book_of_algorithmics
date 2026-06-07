@@ -4,13 +4,13 @@ The AoS vs. SoA choice is one of the most impactful data layout decisions you ca
 
 ## The Two Layouts
 
-```c
+```rust
 // Array of Structures (AoS)
-struct Point3D { float x, y, z; };
-Point3D points[N];
+struct Point3D { x: f32, y: f32, z: f32 }
+// let points: Vec<Point3D> = Vec::with_capacity(N);
 
 // Structure of Arrays (SoA)
-struct Points3D { float *x, *y, *z; };
+struct Points3D { x: Vec<f32>, y: Vec<f32>, z: Vec<f32> }
 // Where x[i], y[i], z[i] correspond to point i
 ```
 
@@ -30,22 +30,24 @@ Three workloads:
 
 ### Workload 1: Access All Fields
 
-```c
+```rust
 // Compute squared distance from origin
-for (int i = 0; i < n; i++)
-    sq += points[i].x*points[i].x +
-          points[i].y*points[i].y +
-          points[i].z*points[i].z;
+for i in 0..n {
+    sq += points[i].x * points[i].x +
+          points[i].y * points[i].y +
+          points[i].z * points[i].z;
+}
 ```
 
 **Winner**: AoS (slightly). All three coordinates of each point are in the same cache line (or two adjacent lines). The CPU loads one line and gets all three values. SoA would need to load from three separate arrays, potentially causing more cache misses.
 
 ### Workload 2: Access One Field
 
-```c
+```rust
 // Sum x-coordinates only
-for (int i = 0; i < n; i++)
+for i in 0..n {
     sum += points[i].x;
+}
 ```
 
 **Winner**: SoA (dramatically). The loop streams through `x[]` — every cache line contains 16 useful floats. With AoS, every cache line contains only 5–6 useful floats (x, y, z, x, y, z — but we only need x). 2/3 of the memory bandwidth is wasted on unused y and z values.
@@ -62,8 +64,9 @@ An additional factor: DRAM row buffers. When accessing SoA, the `x` array is con
 
 **Padded AoS**: A hybrid layout that stores AoS but pads each structure to a power-of-two (e.g., 64 bytes):
 
-```c
-struct alignas(64) Point3D_Padded { float x, y, z; char pad[52]; };
+```rust
+#[repr(C, align(64))]
+struct Point3D_Padded { x: f32, y: f32, z: f32, pad: [u8; 52] }
 ```
 
 This wastes memory but avoids associativity conflicts and DRAM row thrashing. For some access patterns, padded AoS outperforms both AoS and SoA.

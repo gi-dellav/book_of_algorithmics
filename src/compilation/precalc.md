@@ -6,14 +6,14 @@ If a value can be computed at compile time, it should be. The runtime doesn't ne
 
 C++11 introduced `constexpr` functions that can be evaluated at compile time when their arguments are compile-time constants:
 
-```cpp
-constexpr int fibonacci(int n) {
-    if (n <= 1) return n;
-    return fibonacci(n - 1) + fibonacci(n - 2);
+```rust
+const fn fibonacci(n: i32) -> i32 {
+    if n <= 1 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }
 }
 
-constexpr int fib20 = fibonacci(20);  // Computed at compile time — zero runtime cost
-int fib_runtime = fibonacci(rand());  // Computed at runtime (argument not constexpr)
+const FIB20: i32 = fibonacci(20);  // Computed at compile time — zero runtime cost
+let n = 15; // runtime-known value
+let fib_runtime = fibonacci(n);  // Computed at runtime (argument not const)
 ```
 
 A `constexpr` function must:
@@ -25,22 +25,24 @@ A `constexpr` function must:
 
 One of the most practical uses of `constexpr` is generating lookup tables:
 
-```cpp
-constexpr std::array<int, 256> make_popcount_table() {
-    std::array<int, 256> table{};
-    for (int i = 0; i < 256; i++)
+```rust
+const fn make_popcount_table() -> [i32; 256] {
+    let mut table = [0i32; 256];
+    let mut i = 1;
+    while i < 256 {
         table[i] = table[i >> 1] + (i & 1);
-    return table;
+        i += 1;
+    }
+    table
 }
 
-constexpr auto popcount_table = make_popcount_table();
+const POPCOUNT_TABLE: [i32; 256] = make_popcount_table();
 
-// Usage:
-int popcount(uint32_t x) {
-    return popcount_table[x & 0xFF] +
-           popcount_table[(x >> 8) & 0xFF] +
-           popcount_table[(x >> 16) & 0xFF] +
-           popcount_table[(x >> 24) & 0xFF];
+fn popcount(x: u32) -> i32 {
+    POPCOUNT_TABLE[(x & 0xFF) as usize] +
+    POPCOUNT_TABLE[((x >> 8) & 0xFF) as usize] +
+    POPCOUNT_TABLE[((x >> 16) & 0xFF) as usize] +
+    POPCOUNT_TABLE[((x >> 24) & 0xFF) as usize]
 }
 ```
 
@@ -52,17 +54,19 @@ This technique is used throughout embedded systems and performance-critical code
 
 `if constexpr` (C++17) enables conditional compilation without preprocessor macros:
 
-```cpp
-template<typename T>
-auto process(const T &value) {
-    if constexpr (std::is_integral_v<T>) {
-        return value * 2;  // Only compiled for integer types
-    } else if constexpr (std::is_floating_point_v<T>) {
-        return value * 2.0;  // Only compiled for FP types
-    } else {
-        static_assert(sizeof(T) == 0, "Unsupported type");
-    }
+```rust
+trait Process {
+    fn process(self) -> Self;
 }
+
+impl Process for i32 {
+    fn process(self) -> i32 { self * 2 }
+}
+
+impl Process for f64 {
+    fn process(self) -> f64 { self * 2.0 }
+}
+// Unsupported types: compile error (equivalent to static_assert)
 ```
 
 Unlike a regular `if`, the discarded branches don't even need to compile for the given type. This enables writing generic code that specializes at compile time without runtime overhead.
@@ -71,19 +75,13 @@ Unlike a regular `if`, the discarded branches don't even need to compile for the
 
 Before `constexpr` was powerful enough, compile-time computation was done with templates:
 
-```cpp
-template<int N>
-struct Fibonacci {
-    static constexpr int value = Fibonacci<N-1>::value + Fibonacci<N-2>::value;
-};
+```rust
+// Rust const fn (preferred over type-level metaprogramming):
+const fn fibonacci(n: u32) -> u32 {
+    if n <= 1 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }
+}
 
-template<>
-struct Fibonacci<0> { static constexpr int value = 0; };
-
-template<>
-struct Fibonacci<1> { static constexpr int value = 1; };
-
-constexpr int fib20 = Fibonacci<20>::value;  // Compile-time
+const FIB20: u32 = fibonacci(20);  // Compile-time
 ```
 
 This is harder to read and write than `constexpr` functions. Prefer `constexpr` for new code; use templates only when you need SFINAE or type-level computation.
@@ -91,38 +89,54 @@ This is harder to read and write than `constexpr` functions. Prefer `constexpr` 
 ## Practical Examples
 
 **CRC table generation**:
-```cpp
-constexpr std::array<uint32_t, 256> make_crc32_table() {
-    std::array<uint32_t, 256> table{};
-    for (int i = 0; i < 256; i++) {
-        uint32_t crc = i;
-        for (int j = 0; j < 8; j++)
-            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+```rust
+const fn make_crc32_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut j = 0;
+        while j < 8 {
+            crc = (crc >> 1) ^ if (crc & 1) != 0 { 0xEDB88320 } else { 0 };
+            j += 1;
+        }
         table[i] = crc;
+        i += 1;
     }
-    return table;
+    table
 }
 ```
 
 **Sine/cosine tables** for audio oscillators or embedded DSP:
-```cpp
-constexpr std::array<float, 1024> make_sin_table() {
-    std::array<float, 1024> table{};
-    for (int i = 0; i < 1024; i++)
-        table[i] = std::sin(2.0f * M_PI * i / 1024.0f);
-    return table;
+```rust
+// Note: f32::sin() is not const fn in stable Rust (same limitation as C++).
+// Use build-time code generation (shown below) for this case.
+const fn make_sin_table() -> [f32; 1024] {
+    let mut table = [0.0f32; 1024];
+    let mut i = 0;
+    while i < 1024 {
+        table[i] = (2.0 * std::f32::consts::PI * i as f32 / 1024.0).sin();
+        i += 1;
+    }
+    table
 }
 ```
 
 **Compile-time string hashing** (for switch-on-string):
-```cpp
-constexpr uint32_t hash(const char *str, uint32_t h = 0) {
-    return *str == 0 ? h : hash(str + 1, (h * 31) + *str);
+```rust
+const fn hash(s: &[u8], h: u32) -> u32 {
+    if s.is_empty() {
+        h
+    } else {
+        hash(&s[1..], h.wrapping_mul(31).wrapping_add(s[0] as u32))
+    }
 }
 
-switch (hash(input)) {
-    case hash("open"):  /* ... */ break;
-    case hash("close"): /* ... */ break;
+let h = hash(input.as_bytes(), 0);
+if h == hash(b"open", 0) {
+    /* ... */
+} else if h == hash(b"close", 0) {
+    /* ... */
 }
 ```
 
@@ -145,10 +159,10 @@ For complex computations beyond what `constexpr` can express:
 python3 generate_tables.py > tables.inc
 ```
 
-```c
-// Include the generated file
-const int optimization_table[1024] = {
-#include "tables.inc"
+```rust
+// Include the generated file at build time
+const OPTIMIZATION_TABLE: [i32; 1024] = {
+    include!("tables.inc")
 };
 ```
 

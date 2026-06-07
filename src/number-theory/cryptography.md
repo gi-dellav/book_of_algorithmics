@@ -76,13 +76,15 @@ Without hardware:
 - Throughput: ~200 MB/s on a single core.
 
 With AES-NI:
-```c
-__m128i aes_encrypt(__m128i plaintext, __m128i key) {
-    __m128i state = plaintext;
+```rust
+use std::arch::x86_64::*;
+
+unsafe fn aes_encrypt(plaintext: __m128i, round_keys: &[__m128i; 11]) -> __m128i {
+    let mut state = plaintext;
     state = _mm_aesenc_si128(state, round_keys[0]);  // 1 round per instruction
     // ... 9 more rounds ...
     state = _mm_aesenclast_si128(state, round_keys[10]);
-    return state;
+    state
 }
 ```
 Throughput: ~4 GB/s on a single core — 20× faster than software.

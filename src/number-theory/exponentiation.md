@@ -20,30 +20,33 @@ This requires log₂(b) squarings and (on average) log₂(b)/2 multiplications. 
 
 ## Recursive Implementation
 
-```c
-uint64_t modpow_rec(uint64_t a, uint64_t b, uint64_t m) {
-    if (b == 0) return 1 % m;
-    uint64_t half = modpow_rec(a, b / 2, m);
-    uint64_t result = (__int128)half * half % m;
-    if (b & 1)
-        result = (__int128)result * a % m;
-    return result;
+```rust
+fn modpow_rec(a: u64, b: u64, m: u64) -> u64 {
+    if b == 0 { return 1 % m; }
+    let half = modpow_rec(a, b / 2, m);
+    let mut result = ((half as u128) * (half as u128) % (m as u128)) as u64;
+    if b & 1 != 0 {
+        result = ((result as u128) * (a as u128) % (m as u128)) as u64;
+    }
+    result
 }
 ```
 
 ## Iterative Implementation
 
-```c
-uint64_t modpow(uint64_t a, uint64_t b, uint64_t m) {
-    uint64_t result = 1 % m;
-    uint64_t base = a % m;
-    while (b) {
-        if (b & 1)
-            result = (__int128)result * base % m;
-        base = (__int128)base * base % m;
+```rust
+fn modpow(a: u64, b: u64, m: u64) -> u64 {
+    let mut result = 1 % m;
+    let mut base = a % m;
+    let mut b = b;
+    while b != 0 {
+        if b & 1 != 0 {
+            result = ((result as u128) * (base as u128) % (m as u128)) as u64;
+        }
+        base = ((base as u128) * (base as u128) % (m as u128)) as u64;
         b >>= 1;
     }
-    return result;
+    result
 }
 ```
 
@@ -70,18 +73,19 @@ Montgomery multiplication (covered in detail in `montgomery.md`) eliminates the 
 For cryptographic use, `modpow` must run in **constant time** (no secret-dependent branching). Otherwise, an attacker can measure the timing of exponentiation and extract the secret exponent b.
 
 Constant-time binary exponentiation:
-```c
-uint64_t modpow_ct(uint64_t a, uint64_t b, uint64_t m) {
-    uint64_t result = 1 % m;
-    uint64_t base = a % m;
-    while (b) {
+```rust
+fn modpow_ct(a: u64, b: u64, m: u64) -> u64 {
+    let mut result = 1 % m;
+    let mut base = a % m;
+    let mut b = b;
+    while b != 0 {
         // Always multiply, but conditionally use the result
-        uint64_t tmp = (__int128)result * base % m;
-        result = (b & 1) ? tmp : result;  // cmov, not branch
-        base = (__int128)base * base % m;
+        let tmp = ((result as u128) * (base as u128) % (m as u128)) as u64;
+        result = if (b & 1) != 0 { tmp } else { result };  // cmov, not branch
+        base = ((base as u128) * (base as u128) % (m as u128)) as u64;
         b >>= 1;
     }
-    return result;
+    result
 }
 ```
 

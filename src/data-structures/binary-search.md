@@ -4,17 +4,19 @@ Binary search finds the position of a key in a sorted array — or where it woul
 
 ## The Standard Implementation
 
-```c
-int lower_bound(int *a, int n, int key) {
-    int lo = 0, hi = n;
-    while (lo < hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (a[mid] < key)
+```rust
+fn lower_bound(a: *const i32, n: usize, key: i32) -> usize {
+    let mut lo: usize = 0;
+    let mut hi: usize = n;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if unsafe { *a.add(mid) } < key {
             lo = mid + 1;
-        else
+        } else {
             hi = mid;
+        }
     }
-    return lo;
+    lo
 }
 ```
 
@@ -30,18 +32,21 @@ Total: ~1100 cycles. The hardware spends most of its time waiting — for the br
 
 The `if (a[mid] < key)` branch exists to choose between `lo = mid + 1` and `hi = mid`. We can eliminate the branch by computing both values and selecting with a conditional move (`cmov`):
 
-```c
-int lower_bound_branchless(int *a, int n, int key) {
-    int *base = a;
-    while (n > 1) {
-        int half = n / 2;
-        int *mid = base + half;
-        // If key > *mid: base = mid, n -= half
-        // Else:           base stays, n = half
-        base = (key > *mid) ? mid : base;
+```rust
+fn lower_bound_branchless(a: *const i32, n: usize, key: i32) -> usize {
+    let mut base: *const i32 = a;
+    let mut n = n;
+    while n > 1 {
+        let half = n / 2;
+        let mid = unsafe { base.add(half) };
+        base = if key > unsafe { *mid } { mid } else { base };
         n -= half;
     }
-    return (key > *base) + (base - a);
+    if key > unsafe { *base } {
+        (unsafe { base.offset_from(a) } as usize) + 1
+    } else {
+        (unsafe { base.offset_from(a) } as usize)
+    }
 }
 ```
 
@@ -66,37 +71,44 @@ The root (index 0) is the middle element. Its left child (index 1) is the middle
 
 To build the Eytzinger layout:
 
-```c
-int *eytzinger(int *sorted, int n) {
-    int *e = malloc(n * sizeof(int));
+```rust
+use std::alloc::{alloc, Layout};
+
+fn eytzinger(sorted: *const i32, n: usize) -> *mut i32 {
+    let layout = Layout::array::<i32>(n).unwrap();
+    let e = unsafe { alloc(layout) as *mut i32 };
     build(e, sorted, 0, n, 0);
-    return e;
+    e
 }
 
-int build(int *e, int *sorted, int lo, int hi, int idx) {
-    if (lo >= hi) return idx;
-    int mid = lo + (hi - lo) / 2;
-    e[idx] = sorted[mid];
-    int next = build(e, sorted, lo, mid, 2*idx + 1);
-    return build(e, sorted, mid + 1, hi, 2*idx + 2);
+fn build(e: *mut i32, sorted: *const i32, lo: usize, hi: usize, idx: usize) -> usize {
+    if lo >= hi {
+        return idx;
+    }
+    let mid = lo + (hi - lo) / 2;
+    unsafe { *e.add(idx) = *sorted.add(mid); }
+    let next = build(e, sorted, lo, mid, 2 * idx + 1);
+    build(e, sorted, mid + 1, hi, 2 * idx + 2)
 }
 ```
 
 Searching the Eytzinger layout:
 
-```c
-int lower_bound_eytzinger(int *e, int n, int key) {
-    int idx = 0;
-    int result = n;  // Default: key not found
-    while (idx < n) {
-        if (key > e[idx]) {
-            idx = 2 * idx + 2;  // Right child
-        } else {
-            result = idx;        // Could be the answer
-            idx = 2 * idx + 1;  // Left child
+```rust
+fn lower_bound_eytzinger(e: *const i32, n: usize, key: i32) -> usize {
+    let mut idx: usize = 0;
+    let mut result: usize = n;
+    while idx < n {
+        unsafe {
+            if key > *e.add(idx) {
+                idx = 2 * idx + 2;
+            } else {
+                result = idx;
+                idx = 2 * idx + 1;
+            }
         }
     }
-    return result;
+    result
 }
 ```
 
@@ -104,18 +116,16 @@ Why does this help? The first few levels of the Eytzinger tree are contiguous in
 
 Performance: ~55ns per query (~110 cycles). ~3.3× over the standard, ~1.5× over the branchless standard layout. The Eytzinger layout combines with branchless search:
 
-```c
-int lower_bound_eytzinger_branchless(int *e, int n, int key) {
-    int idx = 0;
-    while (idx < n) {
-        // For a CMOV implementation, we compute both children:
-        int left = 2 * idx + 1;
-        int right = 2 * idx + 2;
-        int go_right = (key > e[idx]);
-        idx = go_right ? right : left;
+```rust
+fn lower_bound_eytzinger_branchless(e: *const i32, n: usize, key: i32) -> usize {
+    let mut idx: usize = 0;
+    while idx < n {
+        let left = 2 * idx + 1;
+        let right = 2 * idx + 2;
+        let go_right = key > unsafe { *e.add(idx) };
+        idx = if go_right { right } else { left };
     }
-    // Reconstruct the insertion index from the leaf position
-    return reconstruct(idx, n);
+    reconstruct(idx, n)
 }
 ```
 
@@ -125,25 +135,30 @@ The branchless Eytzinger search: ~35ns per query (~70 cycles). ~5.1× over stand
 
 Even with the Eytzinger layout, the deeper levels of the tree (beyond the first few) still cause cache misses. We can issue prefetches for the children before we need them:
 
-```c
-int lower_bound_eytzinger_prefetch(int *e, int n, int key) {
-    int idx = 0;
-    while (idx < n) {
-        int left = 2 * idx + 1;
-        int right = 2 * idx + 2;
-        // Prefetch grandchildren: the next step's data
-        if (left < n) {
-            __builtin_prefetch(&e[2*left + 1], 0, 0);   // left child's left child
-            __builtin_prefetch(&e[2*left + 2], 0, 0);   // left child's right child
+```rust
+use std::intrinsics::prefetch_read_data;
+
+fn lower_bound_eytzinger_prefetch(e: *const i32, n: usize, key: i32) -> usize {
+    let mut idx: usize = 0;
+    while idx < n {
+        let left = 2 * idx + 1;
+        let right = 2 * idx + 2;
+        if left < n {
+            unsafe {
+                prefetch_read_data(e.add(2 * left + 1) as *const ::std::ffi::c_void, 3);
+                prefetch_read_data(e.add(2 * left + 2) as *const ::std::ffi::c_void, 3);
+            }
         }
-        if (right < n) {
-            __builtin_prefetch(&e[2*right + 1], 0, 0);  // right child's left child
-            __builtin_prefetch(&e[2*right + 2], 0, 0);  // right child's right child
+        if right < n {
+            unsafe {
+                prefetch_read_data(e.add(2 * right + 1) as *const ::std::ffi::c_void, 3);
+                prefetch_read_data(e.add(2 * right + 2) as *const ::std::ffi::c_void, 3);
+            }
         }
-        int go_right = (key > e[idx]);
-        idx = go_right ? right : left;
+        let go_right = key > unsafe { *e.add(idx) };
+        idx = if go_right { right } else { left };
     }
-    return reconstruct(idx, n);
+    reconstruct(idx, n)
 }
 ```
 
@@ -155,32 +170,27 @@ Performance: ~28ns per query (~56 cycles). ~6.4× over standard. Prefetching ove
 
 For the final iterations of the search (when the remaining range fits in a cache line), we can switch to a fully predicated approach: load the entire cache line, compare all elements in parallel with SIMD, and extract the result with bit operations:
 
-```c
-int lower_bound_final(int *e, int n, int key) {
-    int idx = 0;
-    // Eytzinger search until the remaining range fits in one cache line
-    while (idx * 2 + 16 < n) {  // Stop when subtree fits in 16 elements
-        int left = 2 * idx + 1;
-        int right = 2 * idx + 2;
-        int go_right = (key > e[idx]);
-        idx = go_right ? right : left;
+```rust
+use std::arch::x86_64::*;
+
+fn lower_bound_final(e: *const i32, n: usize, key: i32) -> usize {
+    let mut idx: usize = 0;
+    while idx * 2 + 16 < n {
+        let left = 2 * idx + 1;
+        let right = 2 * idx + 2;
+        let go_right = key > unsafe { *e.add(idx) };
+        idx = if go_right { right } else { left };
     }
-    
-    // The subtree rooted at idx fits in one cache line.
-    // Load the whole subtree and search with SIMD:
-    int subtree_size = find_subtree_size(idx, n);  // ≤ 15 for a depth-3 subtree
-    
-    // Load 16 ints (the subtree plus maybe some extra)
-    __m512i v = _mm512_loadu_si512(&e[idx]);
-    __m512i vkey = _mm512_set1_epi32(key);
-    
-    // Compare: which elements are <= key?
-    __mmask16 mask = _mm512_cmple_epi32_mask(v, vkey);
-    
-    // Count how many elements are <= key → insertion index
-    int count = __builtin_popcount(mask) - 1;  // -1 because we want < key, not <=
-    
-    return reconstruct(idx, n, count);
+
+    let subtree_size = find_subtree_size(idx, n);
+
+    unsafe {
+        let v = _mm512_loadu_si512(e.add(idx) as *const __m512i);
+        let vkey = _mm512_set1_epi32(key);
+        let mask = _mm512_cmple_epi32_mask(v, vkey);
+        let count = (mask as u16).count_ones() as usize - 1;
+        reconstruct(idx, n, count)
+    }
 }
 ```
 

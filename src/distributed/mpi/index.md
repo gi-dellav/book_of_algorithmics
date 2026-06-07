@@ -4,21 +4,17 @@ MPI is the assembly language of distributed computing: low-level, portable, and 
 
 ## Hello MPI
 
-```c
-#include <mpi.h>
-#include <stdio.h>
+```rust
+use mpi::traits::*;
 
-int main(int argc, char **argv) {
-    MPI_Init(&argc, &argv);
+fn main() {
+    let universe = mpi::initialize().unwrap();
+    let world = universe.world();
     
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);  // My process ID
-    MPI_Comm_size(MPI_COMM_WORLD, &size);  // Total number of processes
+    let rank = world.rank();  // My process ID
+    let size = world.size();  // Total number of processes
     
-    printf("Hello from process %d of %d\n", rank, size);
-    
-    MPI_Finalize();
-    return 0;
+    println!("Hello from process {} of {}", rank, size);
 }
 ```
 
@@ -26,16 +22,15 @@ Compile with `mpicc`, run with `mpirun -np 8 ./hello`. Each process gets a uniqu
 
 ## Point-to-Point Communication
 
-```c
-if (rank == 0) {
-    int data = 42;
-    MPI_Send(&data, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);
-    //              ^count  ^type  ^dest ^tag ^communicator
-} else if (rank == 1) {
-    int data;
-    MPI_Recv(&data, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    //              ^count  ^type  ^src ^tag ^communicator ^status
-    printf("Received: %d\n", data);
+```rust
+if rank == 0 {
+    let data = 42i32;
+    world.process_at_rank(1).send(&data);
+    //                           ^dest
+} else if rank == 1 {
+    let (data, _status) = world.process_at_rank(0).receive::<i32>();
+    //                              ^src
+    println!("Received: {}", data);
 }
 ```
 
@@ -43,11 +38,10 @@ if (rank == 0) {
 
 **Non-blocking variants** enable overlap of communication and computation:
 
-```c
-MPI_Request request;
-MPI_Isend(&data, 1, MPI_INT, 1, 0, MPI_COMM_WORLD, &request);
+```rust
+let (request, _status) = world.process_at_rank(1).immediate_send_with_tag(&data, 0);
 // ... do useful work while data is being sent ...
-MPI_Wait(&request, MPI_STATUS_IGNORE);  // Ensure send is complete
+request.wait();  // Ensure send is complete
 ```
 
 `MPI_Isend` returns immediately. The `request` handle tracks progress. `MPI_Wait` blocks until the operation completes. Between `Isend` and `Wait`, the program can compute — hiding network latency.
@@ -58,10 +52,10 @@ Collective operations involve all processes in a communicator. They're optimized
 
 ### Broadcast
 
-```c
-int data;
-if (rank == 0) data = 42;
-MPI_Bcast(&data, 1, MPI_INT, 0, MPI_COMM_WORLD);
+```rust
+let mut data: i32 = 0;
+if rank == 0 { data = 42; }
+world.process_at_rank(0).broadcast_into(&mut data);
 // All processes now have data == 42
 ```
 
@@ -69,10 +63,10 @@ Tree-based broadcast: O(log P) messages instead of P-1. MPI chooses the tree top
 
 ### Reduce
 
-```c
-int local_sum = compute_local();
-int global_sum;
-MPI_Reduce(&local_sum, &global_sum, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+```rust
+let local_sum = compute_local();
+let mut global_sum = 0i32;
+world.process_at_rank(0).reduce_into(&local_sum, &mut global_sum, SystemOperation::sum());
 // global_sum is valid only on process 0
 ```
 
@@ -82,17 +76,17 @@ Tree-based reduction: processes combine results in pairs, propagating up the tre
 
 ### Scatter and Gather
 
-```c
-int *big_array;      // Only on process 0
-int local_chunk[CHUNK];
-MPI_Scatter(big_array, CHUNK, MPI_INT, local_chunk, CHUNK, MPI_INT, 0, MPI_COMM_WORLD);
-MPI_Gather(local_chunk, CHUNK, MPI_INT, big_array, CHUNK, MPI_INT, 0, MPI_COMM_WORLD);
+```rust
+// Only on process 0
+let mut local_chunk = vec![0i32; CHUNK];
+world.process_at_rank(0).scatter_into(&mut local_chunk);
+world.process_at_rank(0).gather_into(&local_chunk);
 ```
 
 ### Barrier
 
-```c
-MPI_Barrier(MPI_COMM_WORLD);
+```rust
+world.barrier();
 ```
 
 Barriers are useful for separating phases in iterative algorithms, but a slow process holds everyone back (the "straggler problem").
@@ -113,13 +107,14 @@ For small messages (n ≤ 1 KB): latency dominates. For large messages (n ≥ 1 
 
 Summing 1 billion integers across 8 nodes:
 
-```c
-long long local_sum = 0;
-for (int i = rank; i < N; i += size)  // Round-robin assignment
-    local_sum += array[i];
+```rust
+let mut local_sum: i64 = 0;
+for i in (rank..N).step_by(size as usize) {  // Round-robin assignment
+    local_sum += array[i as usize];
+}
 
-long long global_sum;
-MPI_Allreduce(&local_sum, &global_sum, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+let mut global_sum: i64 = 0;
+world.all_reduce_into(&local_sum, &mut global_sum, SystemOperation::sum());
 ```
 
 Each process sums its portion locally (N/P elements, perfectly parallel). Then `MPI_Allreduce` combines the P results in O(log P) time. For N = 10⁹: local sum ~10 ms, reduction ~1 µs. Speedup: ~8× on 8 nodes (near-perfect).

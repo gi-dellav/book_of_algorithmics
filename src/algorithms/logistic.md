@@ -6,20 +6,20 @@ Logistic regression is the workhorse of classification problems — spam detecti
 
 For a 10-class MNIST classifier with 784 input features and 10 output classes:
 
-```c
-void logistic_baseline(float *x, float *W, float *b, float *probs, int n_features, int n_classes) {
-    for (int c = 0; c < n_classes; c++) {
-        float logit = b[c];
-        for (int i = 0; i < n_features; i++)
-            logit += W[c * n_features + i] * x[i];
-        probs[c] = expf(logit);
+```rust
+fn logistic_baseline(x: &[f32], w: &[f32], b: &[f32], probs: &mut [f32], n_features: usize, n_classes: usize) {
+    for c in 0..n_classes {
+        let mut logit = b[c];
+        for i in 0..n_features {
+            logit += w[c * n_features + i] * x[i];
+        }
+        probs[c] = logit.exp();
     }
     // Softmax: normalize
-    float sum = 0;
-    for (int c = 0; c < n_classes; c++)
-        sum += probs[c];
-    for (int c = 0; c < n_classes; c++)
+    let sum: f32 = probs[..n_classes].iter().sum();
+    for c in 0..n_classes {
         probs[c] /= sum;
+    }
 }
 ```
 
@@ -35,20 +35,21 @@ argmax(softmax(logits)) = argmax(logits)
 
 So we can skip the softmax entirely and just take the argmax of the logits. This eliminates 10 exponential calls and the normalization loop.
 
-```c
-int classify(float *x, float *W, float *b, int n_features, int n_classes) {
-    int best_class = 0;
-    float best_logit = -INFINITY;
-    for (int c = 0; c < n_classes; c++) {
-        float logit = b[c];
-        for (int i = 0; i < n_features; i++)
-            logit += W[c * n_features + i] * x[i];
-        if (logit > best_logit) {
+```rust
+fn classify(x: &[f32], w: &[f32], b: &[f32], n_features: usize, n_classes: usize) -> usize {
+    let mut best_class = 0usize;
+    let mut best_logit = f32::NEG_INFINITY;
+    for c in 0..n_classes {
+        let mut logit = b[c];
+        for i in 0..n_features {
+            logit += w[c * n_features + i] * x[i];
+        }
+        if logit > best_logit {
             best_logit = logit;
             best_class = c;
         }
     }
-    return best_class;
+    best_class
 }
 ```
 
@@ -58,13 +59,18 @@ Performance: ~1.8× faster (no exp, no softmax normalization, and the argmax loo
 
 The inner loop is a dot product — perfect for SIMD:
 
-```c
-float logit = b[c];
-__m256 vsum = _mm256_setzero_ps();
-for (int i = 0; i < n_features; i += 8) {
-    __m256 vx = _mm256_loadu_ps(x + i);
-    __m256 vw = _mm256_loadu_ps(W + c * n_features + i);
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+let mut logit = b[c];
+let mut vsum = _mm256_setzero_ps();
+let mut i = 0;
+while i < n_features {
+    let vx = _mm256_loadu_ps(x.as_ptr().add(i));
+    let vw = _mm256_loadu_ps(w.as_ptr().add(c * n_features + i));
     vsum = _mm256_fmadd_ps(vx, vw, vsum);
+    i += 8;
 }
 // Horizontal sum of vsum
 logit += horizontal_sum_ps(vsum);
@@ -76,19 +82,26 @@ Performance: ~4× faster than scalar dot product.
 
 If we can tolerate slightly lower accuracy, we can store weights as 8-bit signed integers instead of 32-bit floats:
 
-```c
-int8_t *W_quantized;  // Pre-quantized: round(W * 127.0f / max_abs_weight)
-float scale;          // max_abs_weight / 127.0f (precomputed)
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
-float logit = b[c];
-__m256i vsum_int = _mm256_setzero_si256();
-for (int i = 0; i < n_features; i += 32) {
-    __m256i vw = _mm256_loadu_si256((__m256i*)(W_quantized + c * n_features + i));
+let w_quantized: &[i8];  // Pre-quantized: round(W * 127.0f / max_abs_weight)
+let scale: f32;          // max_abs_weight / 127.0f (precomputed)
+
+let mut logit = b[c];
+let mut vsum_int = _mm256_setzero_si256();
+let mut i = 0;
+while i < n_features {
+    let vw = _mm256_loadu_si256(
+        w_quantized.as_ptr().add(c * n_features + i) as *const __m256i
+    );
     // Sign-extend weights from int8 to int16, then to int32 (via pmaddubsw + pmaddwd)
     // or use _mm256_maddubs_epi16 for 8-bit × 8-bit → 16-bit accumulation
     // ... 
+    i += 32;
 }
-float logit_float = horizontal_sum_int(vsum_int) * scale + b[c];
+let logit_float = horizontal_sum_int(vsum_int) as f32 * scale + b[c];
 ```
 
 The `_mm256_maddubs_epi16` instruction (SSSE3) does 32 8-bit × 8-bit multiplications and accumulates adjacent pairs into 16-bit results — all in one instruction.
@@ -109,11 +122,14 @@ Or: block the weight matrix into tiles that fit in L1, and process all classes w
 
 bfloat16 (see `arithmetic/ieee-754.md`) halves memory bandwidth while preserving the dynamic range of float32:
 
-```c
+```rust
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
 // Convert bfloat16 to float32: shift left by 16
-__m256 bf16_to_f32(__m128i bf16_lo, __m128i bf16_hi) {
-    __m256i v = _mm256_insertf128_si256(_mm256_castsi128_si256(bf16_lo), bf16_hi, 1);
-    return _mm256_castsi256_ps(_mm256_slli_epi32(v, 16));
+unsafe fn bf16_to_f32(bf16_lo: __m128i, bf16_hi: __m128i) -> __m256 {
+    let mut v = _mm256_insertf128_si256(_mm256_castsi128_si256(bf16_lo), bf16_hi, 1);
+    _mm256_castsi256_ps(_mm256_slli_epi32::<16>(v))
 }
 ```
 

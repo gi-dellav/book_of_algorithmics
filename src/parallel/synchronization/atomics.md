@@ -8,13 +8,13 @@ An atomic operation has two guarantees:
 1. **Indivisibility**: no thread observes a partially-executed operation. A 64-bit atomic store on a 32-bit architecture writes all 8 bytes atomically — no thread sees 4 old bytes + 4 new bytes.
 2. **Visibility**: with appropriate memory ordering, the result becomes visible to other threads in a well-defined order.
 
-```c
-#include <stdatomic.h>
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
 
-atomic_int counter = 0;
+static COUNTER: AtomicI32 = AtomicI32::new(0);
 
-void increment() {
-    atomic_fetch_add(&counter, 1);  // Atomic, lock-free
+fn increment() {
+    COUNTER.fetch_add(1, Ordering::SeqCst);  // Atomic, lock-free
 }
 ```
 
@@ -46,16 +46,18 @@ CAS is the universal atomic primitive. Given an expected value and a new value, 
 3. If `current != expected`: do nothing.
 4. Returns the value read (whether the swap happened or not).
 
-```c
+```rust
+use std::sync::atomic::{AtomicI32, Ordering};
+
 // CAS: if *ptr == expected, set *ptr = desired and return true
-bool cas(atomic_int *ptr, int expected, int desired) {
-    return atomic_compare_exchange_strong(ptr, &expected, desired);
+fn cas(ptr: &AtomicI32, expected: i32, desired: i32) -> bool {
+    ptr.compare_exchange(expected, desired, Ordering::SeqCst, Ordering::SeqCst).is_ok()
 }
 
 // Lock-free counter increment using CAS
-void cas_increment(atomic_int *counter) {
-    int old = atomic_load(counter);
-    while (!atomic_compare_exchange_weak(counter, &old, old + 1)) {
+fn cas_increment(counter: &AtomicI32) {
+    let mut old = counter.load(Ordering::SeqCst);
+    while counter.compare_exchange_weak(old, old + 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         // old is automatically updated to the current value on failure
         // Loop until CAS succeeds
     }
@@ -68,29 +70,38 @@ CAS can implement any atomic operation — `fetch_add` can be written as a CAS l
 
 The simplest lock-free data structure: a LIFO stack using CAS on the head pointer:
 
-```c
+```rust
+use std::sync::atomic::{AtomicPtr, Ordering};
+
 struct Node {
-    int value;
-    Node *next;
-};
-
-atomic<Node*> head = NULL;
-
-void push(int value) {
-    Node *node = malloc(sizeof(Node));
-    node->value = value;
-    do {
-        node->next = atomic_load(&head);
-    } while (!atomic_compare_exchange_weak(&head, &node->next, node));
+    value: i32,
+    next: *mut Node,
 }
 
-Node* pop() {
-    Node *node;
-    do {
-        node = atomic_load(&head);
-        if (node == NULL) return NULL;  // Empty
-    } while (!atomic_compare_exchange_weak(&head, &node, node->next));
-    return node;
+static HEAD: AtomicPtr<Node> = AtomicPtr::new(std::ptr::null_mut());
+
+fn push(value: i32) {
+    let node = Box::into_raw(Box::new(Node { value, next: std::ptr::null_mut() }));
+    loop {
+        unsafe { (*node).next = HEAD.load(Ordering::Acquire); }
+        if HEAD.compare_exchange_weak(
+            unsafe { (*node).next },
+            node,
+            Ordering::Release,
+            Ordering::Acquire,
+        ).is_ok() { break; }
+    }
+}
+
+unsafe fn pop() -> Option<Box<Node>> {
+    loop {
+        let node = HEAD.load(Ordering::Acquire);
+        if node.is_null() { return None; }  // Empty
+        let next = (*node).next;
+        if HEAD.compare_exchange_weak(node, next, Ordering::Release, Ordering::Acquire).is_ok() {
+            return Some(Box::from_raw(node));
+        }
+    }
 }
 ```
 
@@ -102,32 +113,48 @@ The ABA problem: between reading `node->next` and CAS, another thread pops `node
 
 A lock-free multi-producer multi-consumer queue:
 
-```c
-struct Queue {
-    atomic<Node*> head;
-    atomic<Node*> tail;
-};
+```rust
+use std::sync::atomic::{AtomicPtr, Ordering};
 
-void enqueue(Queue *q, int value) {
-    Node *node = malloc(sizeof(Node));
-    node->value = value;
-    node->next = NULL;
-    
-    while (true) {
-        Node *tail = atomic_load(&q->tail);
-        Node *next = atomic_load(&tail->next);
-        
-        if (tail == atomic_load(&q->tail)) {  // tail was consistent
-            if (next == NULL) {
-                // tail is the last node. Try to link our new node.
-                if (atomic_compare_exchange_weak(&tail->next, &next, node)) {
-                    // Success! Advance tail (may fail — other enqueuer will do it)
-                    atomic_compare_exchange_strong(&q->tail, &tail, node);
-                    return;
+struct Node {
+    value: i32,
+    next: AtomicPtr<Node>,
+}
+
+struct Queue {
+    head: AtomicPtr<Node>,
+    tail: AtomicPtr<Node>,
+}
+
+impl Queue {
+    fn enqueue(&self, value: i32) {
+        let node = Box::into_raw(Box::new(Node {
+            value,
+            next: AtomicPtr::new(std::ptr::null_mut()),
+        }));
+
+        loop {
+            let tail = self.tail.load(Ordering::Acquire);
+            let next = unsafe { (*tail).next.load(Ordering::Acquire) };
+
+            if tail == self.tail.load(Ordering::Acquire) {  // tail was consistent
+                if next.is_null() {
+                    // tail is the last node. Try to link our new node.
+                    if unsafe { (*tail).next.compare_exchange_weak(
+                        next, node, Ordering::Release, Ordering::Acquire
+                    ).is_ok() } {
+                        // Success! Advance tail (may fail — other enqueuer will do it)
+                        let _ = self.tail.compare_exchange(
+                            tail, node, Ordering::Release, Ordering::Acquire
+                        );
+                        return;
+                    }
+                } else {
+                    // tail is behind. Help advance it.
+                    let _ = self.tail.compare_exchange(
+                        tail, next, Ordering::Release, Ordering::Acquire
+                    );
                 }
-            } else {
-                // tail is behind. Help advance it.
-                atomic_compare_exchange_strong(&q->tail, &tail, next);
             }
         }
     }
@@ -142,11 +169,14 @@ Atomics are fast but don't eliminate contention. If 8 cores all do `atomic_fetch
 
 **False sharing** makes this worse: if two unrelated atomics happen to be in the same cache line, they contend as if they were the same variable. The fix: pad to 64 bytes:
 
-```c
+```rust
+use std::sync::atomic::AtomicI32;
+
+#[repr(align(64))]  // Ensure this is the only thing in its cache line
 struct PaddedAtomic {
-    atomic_int value;
-    char padding[60];  // Ensure this is the only thing in its cache line
-};
+    value: AtomicI32,
+    _padding: [u8; 60],
+}
 ```
 
 ## When to Go Lock-Free

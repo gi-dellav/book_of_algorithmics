@@ -6,19 +6,20 @@ If the branch predictor is the CPU's crystal ball, branchless programming is the
 
 The simplest branchless technique uses the sign bit as a mask:
 
-```c
+```rust
 // Branchy:
-int result;
-if (x < 50)
+let result: i32;
+if x < 50 {
     result = x + 100;
-else
+} else {
     result = 0;
+}
 ```
 
-```c
+```rust
 // Branchless:
-int mask = (x - 50) >> 31;  // mask = 0xFFFFFFFF if x < 50, 0x00000000 if x >= 50
-int result = (x + 100) & mask;
+let mask = (x - 50) >> 31;  // mask = 0xFFFFFFFF if x < 50, 0x00000000 if x >= 50
+let result = (x + 100) & mask;
 ```
 
 How it works: `x - 50` is negative if `x < 50` (MSB = 1). Shifting right 31 bits (arithmetic shift, `sar` in x86) fills all 32 bits with the sign bit, creating a mask that's all-ones (which is -1 in two's complement) or all-zeros (0). AND-ing with the mask gives us the value when the condition is true, and 0 when it's false.
@@ -37,17 +38,17 @@ cmovge ebx, ecx   ; ebx = ecx if eax >= 50 (signed), else unchanged
 `cmov` reads both operands, evaluates a condition (from FLAGS), and writes the destination register only if the condition is true. It looks like a branch but isn't — the CPU executes the `cmov` as a single dataflow operation, with no control flow change. The pipeline stays full.
 
 The compiler generates `cmov` for:
-```c
-result = (condition) ? true_value : false_value;
+```rust
+result = if condition { true_value } else { false_value };
 ```
 when both `true_value` and `false_value` are simple (no side effects, no memory access, no function calls).
 
-```c
+```rust
 // This generates cmov:
-x = (a > b) ? a : b;  // cmovg after cmp
+x = if a > b { a } else { b };  // cmovg after cmp
 
 // This generates a branch:
-x = (a > b) ? expensive_function() : 0;  // compiler won't compute expensive_function() unconditionally
+x = if a > b { expensive_function() } else { 0 };  // compiler won't compute expensive_function() unconditionally
 ```
 
 You can check the assembly to see which path the compiler took. If you find a branch where you expected `cmov`, the compiler judged the "unconditional" path too expensive.
@@ -79,47 +80,48 @@ In practice:
 
 ### Branchless Min/Max
 
-```c
+```rust
 // Branchy
-int min = (a < b) ? a : b;
+let min = if a < b { a } else { b };
 
 // Compiler generates cmov (usually). But check assembly.
 ```
 
 ### Branchless Absolute Value
 
-```c
+```rust
 // Without branch (two's complement trick):
-int mask = x >> 31;        // all-ones if negative
-int abs = (x ^ mask) - mask;  // ~x + 1 if negative, x if positive
+let mask = x >> 31;        // all-ones if negative
+let abs = (x ^ mask) - mask;  // ~x + 1 if negative, x if positive
 // Or: (x + mask) ^ mask
 
 // Or trust the compiler:
-int abs = (x < 0) ? -x : x;  // often generates cmov, not a branch
+let abs = if x < 0 { -x } else { x };  // often generates cmov, not a branch
 ```
 
 ### Branchless Binary Search
 
 The standard binary search has a branch inside the loop:
-```c
-while (lo < hi) {
-    int mid = (lo + hi) / 2;
-    if (a[mid] < target)       // branch!
+```rust
+while lo < hi {
+    let mid = (lo + hi) / 2;
+    if a[mid] < target {       // branch!
         lo = mid + 1;
-    else
+    } else {
         hi = mid;
+    }
 }
 ```
 
 The branchless version uses `cmov`:
-```c
-while (lo < hi) {
-    int mid = (lo + hi) / 2;
+```rust
+while lo < hi {
+    let mid = (lo + hi) / 2;
     // Always compute both possibilities, select with cmov
-    int new_lo = mid + 1;
-    int new_hi = mid;
-    lo = (a[mid] < target) ? new_lo : lo;
-    hi = (a[mid] < target) ? hi : new_hi;
+    let new_lo = mid + 1;
+    let new_hi = mid;
+    lo = if a[mid] < target { new_lo } else { lo };
+    hi = if a[mid] < target { hi } else { new_hi };
 }
 ```
 
@@ -131,19 +133,24 @@ Chapter 12 (`data-structures/binary-search.md`) explores this optimization in de
 
 SIMD instructions naturally support branchless operations via masking:
 
-```c
+```rust
 // Instead of:
-for (int i = 0; i < n; i++)
-    if (a[i] > 0)
-        b[i] = sqrt(a[i]);
-    else
-        b[i] = 0;
+for i in 0..n {
+    if a[i] > 0.0 {
+        b[i] = a[i].sqrt();
+    } else {
+        b[i] = 0.0;
+    }
+}
 
 // SIMD with masking:
-__m256 zero = _mm256_setzero_ps();
-__m256 mask = _mm256_cmp_ps(a_vec, zero, _CMP_GT_OQ);  // all-ones where > 0
-__m256 result = _mm256_sqrt_ps(a_vec);                   // compute sqrt for all
-result = _mm256_and_ps(result, mask);                    // zero where condition fails
+use std::arch::x86_64::*;
+unsafe {
+    let zero = _mm256_setzero_ps();
+    let mask = _mm256_cmp_ps(a_vec, zero, _CMP_GT_OQ);  // all-ones where > 0
+    let mut result = _mm256_sqrt_ps(a_vec);               // compute sqrt for all
+    result = _mm256_and_ps(result, mask);                  // zero where condition fails
+}
 ```
 
 Four operations, no branches, 8 elements at a time. The `sqrt` is computed for all elements (including those we'll mask out), but the throughput gain from SIMD outweighs the wasted work.

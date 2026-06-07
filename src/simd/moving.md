@@ -4,9 +4,9 @@ Getting data into and out of SIMD registers is often more expensive than the ope
 
 ## Aligned vs. Unaligned Loads
 
-```c
-__m256 a = _mm256_load_ps(ptr);   // Requires 32-byte alignment (crashes if misaligned)
-__m256 a = _mm256_loadu_ps(ptr);  // Handles any alignment
+```rust
+let a = unsafe { _mm256_load_ps(ptr) };   // Requires 32-byte alignment (crashes if misaligned)
+let a = unsafe { _mm256_loadu_ps(ptr) };  // Handles any alignment
 ```
 
 On modern CPUs (Haswell+), `loadu` is as fast as `load` **when the data is aligned at runtime** — the CPU optimizes the common case. When the data crosses a cache line boundary, `loadu` costs 1–2 extra cycles. The `load` variant still exists because:
@@ -26,9 +26,9 @@ This matters when mixing SSE and AVX instructions — switching from 256-bit to 
 
 ## Extract and Insert: Surprisingly Slow
 
-```c
-int value = _mm_extract_epi32(v, 3);     // Extract lane 3: ~3 cycles
-v = _mm_insert_epi32(v, value, 3);       // Insert into lane 3: ~3 cycles
+```rust
+let value = unsafe { _mm_extract_epi32::<3>(v) };     // Extract lane 3: ~3 cycles
+unsafe { v = _mm_insert_epi32::<3>(v, value) };       // Insert into lane 3: ~3 cycles
 ```
 
 Extract and insert move data between SIMD registers and scalar registers (or memory). They cross the boundary between the SIMD and integer domains, which costs 2–3 cycles on Zen 2. In a tight loop, this is devastating.
@@ -39,9 +39,9 @@ Extract and insert move data between SIMD registers and scalar registers (or mem
 
 Replicate a scalar across all lanes:
 
-```c
-__m256 v = _mm256_set1_ps(value);        // Broadcast from scalar
-__m256 v = _mm256_broadcast_ss(&value);  // Broadcast from memory
+```rust
+let v = unsafe { _mm256_set1_ps(value) };        // Broadcast from scalar
+let v = unsafe { _mm256_broadcast_ss(&value) };  // Broadcast from memory
 ```
 
 Broadcast is a single instruction (`vbroadcastss`), throughput 1/cycle. It loads one value from memory and replicates it across all 8 lanes in one operation — much faster than 8 scalar loads + inserts.
@@ -50,19 +50,21 @@ Broadcast is a single instruction (`vbroadcastss`), throughput 1/cycle. It loads
 
 When loading data that is naturally SoA (Structure of Arrays), a contiguous load works perfectly:
 
-```c
+```rust
 // x, y, z are separate arrays
-__m256 vx = _mm256_loadu_ps(x + i);  // 8 x-values
-__m256 vy = _mm256_loadu_ps(y + i);  // 8 y-values
-__m256 vz = _mm256_loadu_ps(z + i);  // 8 z-values
+let vx = unsafe { _mm256_loadu_ps(x.add(i)) };  // 8 x-values
+let vy = unsafe { _mm256_loadu_ps(y.add(i)) };  // 8 y-values
+let vz = unsafe { _mm256_loadu_ps(z.add(i)) };  // 8 z-values
 ```
 
 When data is AoS (Array of Structures), you need a **transpose** to group same-field values into vectors:
 
-```c
+```rust
 // points[i].x, points[i].y, points[i].z are interleaved
 // Load 8 points → transpose to get 8 x values in one vector
-__m256 vx, vy, vz;
+let vx: __m256;
+let vy: __m256;
+let vz: __m256;
 // ... use vshufps, vperm2f128 to deinterleave ...
 ```
 
@@ -72,9 +74,9 @@ AoS-to-SoA transpose is a common SIMD pattern. The `shuffling.md` article covers
 
 Load elements from non-contiguous addresses:
 
-```c
-__m256i indices = _mm256_setr_epi32(0, 10, 20, 30, 40, 50, 60, 70);
-__m256 values = _mm256_i32gather_ps(base, indices, 4);  // 4 = scale (bytes per element)
+```rust
+let indices = unsafe { _mm256_setr_epi32(0, 10, 20, 30, 40, 50, 60, 70) };
+let values = unsafe { _mm256_i32gather_ps(base, indices, 4) };  // 4 = scale (bytes per element)
 ```
 
 `vgatherdps` loads 8 values from 8 *different* memory locations in a single instruction. The hardware does this as 8 sequential loads — it's **not** 8× faster than scalar. On Zen 2, gather throughput is ~1 element per 2 cycles → 16 cycles for 8 elements. It's useful when the access pattern is truly irregular and you want to save code size and front-end bandwidth, but it's usually not a performance win over scalar loads.

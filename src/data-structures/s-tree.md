@@ -12,11 +12,12 @@ But the real win is SIMD. With B = 16 keys per node (one 64-byte cache line of 3
 
 An S-tree for 32-bit keys with B = 16 stores nodes as:
 
-```c
+```rust
+#[repr(C)]
 struct SNode {
-    int keys[15];    // B - 1 = 15 sorted keys (not 16 — we need room for child pointers)
-    int children;    // Offset to first child node (implicit: children[0..15])
-};
+    keys: [i32; 15],  // B - 1 = 15 sorted keys (not 16 — we need room for child pointers)
+    children: i32,     // Offset to first child node (implicit: children[0..15])
+}
 ```
 
 Each node is 15 × 4 (keys) + 4 (metadata) = 64 bytes — exactly one cache line. The nodes are stored in a single contiguous array, with children laid out in breadth-first order (like the Eytzinger layout, but B-ary).
@@ -41,53 +42,47 @@ Simpler: use the layout where node `i` stores keys `[tree[i*B], ..., tree[i*B + 
 
 ## Building an S-Tree
 
-```c
-// Build a B-ary tree from a sorted array. 
-// 'out' is the output array, assumed large enough.
-// Returns the number of nodes written.
-int build_stree(int *sorted, int n, int *out, int B) {
-    // First, write the leaf level: sorted array in blocks of B
-    int num_leaves = (n + B - 1) / B;
-    int leaf_start = 0;  // We'll compute the total size later
-    
-    // Compute tree height
-    int height = 1;
-    int nodes_at_level = num_leaves;
-    while (nodes_at_level > 1) {
-        nodes_at_level = (nodes_at_level + B - 1) / B;
-        height++;
+```rust
+use std::alloc::{alloc, dealloc, Layout};
+
+fn build_stree(sorted: *const i32, n: usize, out: *mut i32, b: usize) -> usize {
+    let num_leaves = (n + b - 1) / b;
+
+    let mut height: usize = 1;
+    let mut nodes_at_level = num_leaves;
+    while nodes_at_level > 1 {
+        nodes_at_level = (nodes_at_level + b - 1) / b;
+        height += 1;
     }
-    
-    // Total nodes in a complete B-ary tree
-    int total_nodes = 0;
-    int level_size = num_leaves;
-    for (int h = 0; h < height; h++) {
+
+    let mut total_nodes: usize = 0;
+    let mut level_size = num_leaves;
+    for _ in 0..height {
         total_nodes += level_size;
-        level_size = (level_size + B - 1) / B;
+        level_size = (level_size + b - 1) / b;
     }
-    
-    // Place leaves at the end
-    int leaf_base = total_nodes - num_leaves;
-    for (int i = 0; i < num_leaves; i++) {
-        int leaf_idx = leaf_base + i;
-        int start = i * B;
-        int end = (start + B < n) ? start + B : n;
-        for (int j = start; j < end; j++)
-            out[leaf_idx * B + (j - start)] = sorted[j];
-        // Pad remaining slots with INT_MAX (or the last valid key)
-        for (int j = end - start; j < B; j++)
-            out[leaf_idx * B + j] = INT_MAX;
+
+    let leaf_base = total_nodes - num_leaves;
+    for i in 0..num_leaves {
+        let leaf_idx = leaf_base + i;
+        let start = i * b;
+        let end = if start + b < n { start + b } else { n };
+        for j in start..end {
+            unsafe {
+                *out.add(leaf_idx * b + (j - start)) = *sorted.add(j);
+            }
+        }
+        for j in (end - start)..b {
+            unsafe {
+                *out.add(leaf_idx * b + j) = i32::MAX;
+            }
+        }
     }
-    
+
     // Build internal levels bottom-up
-    for (int h = height - 2; h >= 0; h--) {
-        int parent_start = 0;
-        for (int l = 0; l < h; l++)
-            parent_start += level_size_at(l);  // Compute base of this level
-        // ... build each parent node from its B children
-    }
-    
-    return total_nodes * B;  // Total keys stored (some are INT_MAX sentinels)
+    // ... build each parent node from its B children
+
+    total_nodes * b
 }
 ```
 
@@ -97,35 +92,31 @@ The build is O(n): each key is written once. The tree occupies `total_nodes * B 
 
 Given a 16-wide S-tree (B = 16), the search:
 
-```c
-int lower_bound_stree(int *tree, int n, int key) {
-    int node = 0;  // Root node index
-    int B = 16;
-    
-    // Descend from root to leaf
-    while (node * B < total_internal_nodes) {
-        // Load the node's keys (16 keys = 64 bytes = 1 cache line)
-        __m512i keys = _mm512_loadu_si512(&tree[node * B]);
-        __m512i vkey = _mm512_set1_epi32(key);
-        
-        // Compare: which keys are <= key?
-        __mmask16 mask = _mm512_cmple_epi32_mask(keys, vkey);
-        
-        // Count how many keys are <= key → that's the child index
-        int child_idx = __builtin_popcount(mask);
-        
-        // Navigate to the child
-        node = node * B + child_idx + 1;  // +1 for the implicit child numbering
+```rust
+use std::arch::x86_64::*;
+
+fn lower_bound_stree(tree: *const i32, n: usize, key: i32) -> usize {
+    let mut node: usize = 0;
+    let b: usize = 16;
+
+    while node * b < total_internal_nodes {
+        unsafe {
+            let keys = _mm512_loadu_si512(tree.add(node * b) as *const __m512i);
+            let vkey = _mm512_set1_epi32(key);
+            let mask = _mm512_cmple_epi32_mask(keys, vkey);
+            let child_idx = (mask as u16).count_ones() as usize;
+            node = node * b + child_idx + 1;
+        }
     }
-    
-    // At a leaf node: find the exact position within the leaf
-    int leaf_start = node * B;
-    __m512i leaf = _mm512_loadu_si512(&tree[leaf_start]);
-    __m512i vkey = _mm512_set1_epi32(key);
-    __mmask16 mask = _mm512_cmplt_epi32_mask(leaf, vkey);  // This time: strictly less
-    int pos = __builtin_popcount(mask);
-    
-    return leaf_start + pos - internal_offset;  // Convert to original array index
+
+    let leaf_start = node * b;
+    unsafe {
+        let leaf = _mm512_loadu_si512(tree.add(leaf_start) as *const __m512i);
+        let vkey = _mm512_set1_epi32(key);
+        let mask = _mm512_cmplt_epi32_mask(leaf, vkey);
+        let pos = (mask as u16).count_ones() as usize;
+        leaf_start + pos - internal_offset
+    }
 }
 ```
 
@@ -137,27 +128,33 @@ Compare with branchless Eytzinger binary search: 20 iterations × 3.5 cycles = 7
 
 Without AVX-512, we can still do 8-wide comparisons with AVX2:
 
-```c
-int lower_bound_stree_avx2(int *tree, int n, int key) {
-    int node = 0;
-    int B = 8;
-    
-    while (node * B < total_internal_nodes) {
-        __m256i keys = _mm256_loadu_si256((__m256i*)&tree[node * B]);
-        __m256i vkey = _mm256_set1_epi32(key);
-        __m256i cmp = _mm256_cmpgt_epi32(vkey, keys);  // key > tree[i]?
-        int mask = _mm256_movemask_ps(_mm256_castsi256_ps(cmp));
-        int child_idx = __builtin_popcount(mask);
-        node = node * B + child_idx + 1;
+```rust
+use std::arch::x86_64::*;
+
+fn lower_bound_stree_avx2(tree: *const i32, n: usize, key: i32) -> usize {
+    let mut node: usize = 0;
+    let b: usize = 8;
+
+    while node * b < total_internal_nodes {
+        unsafe {
+            let keys = _mm256_loadu_si256(tree.add(node * b) as *const __m256i);
+            let vkey = _mm256_set1_epi32(key);
+            let cmp = _mm256_cmpgt_epi32(vkey, keys);
+            let mask = _mm256_movemask_ps(_mm256_castsi256_ps(cmp));
+            let child_idx = (mask as u32).count_ones() as usize;
+            node = node * b + child_idx + 1;
+        }
     }
-    
-    // Leaf search: linear scan of 8 elements (or use SIMD again)
-    int leaf_start = node * B;
-    for (int i = 0; i < B; i++) {
-        if (tree[leaf_start + i] >= key)
-            return leaf_start + i - internal_offset;
+
+    let leaf_start = node * b;
+    unsafe {
+        for i in 0..b {
+            if *tree.add(leaf_start + i) >= key {
+                return leaf_start + i - internal_offset;
+            }
+        }
     }
-    return n;
+    n
 }
 ```
 
@@ -171,9 +168,19 @@ For n ≥ 10⁷, the S-tree spans multiple 4KB pages. The top levels of the tree
 
 The fix: **hugepages**. A 2MB hugepage maps the entire S-tree (for n ≤ 10⁷, space ≤ 40 MB) into a single TLB entry. No TLB misses. On Linux:
 
-```c
-void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
-               MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+```rust
+use libc::{mmap, MAP_PRIVATE, MAP_ANONYMOUS, MAP_HUGETLB, PROT_READ, PROT_WRITE};
+
+let p = unsafe {
+    mmap(
+        std::ptr::null_mut(),
+        size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+        -1,
+        0,
+    )
+};
 ```
 
 With transparent hugepages (THP) enabled, the kernel may automatically promote 4KB pages to 2MB — but `mmap` with `MAP_HUGETLB` guarantees it.

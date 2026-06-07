@@ -12,17 +12,19 @@ These algorithms are "sketching" or "streaming" algorithms: they process data in
 
 Pick k random elements from a stream of unknown length, where each element has equal probability k/N of being selected.
 
-```c
-int reservoir[k];
+```rust
+let mut reservoir = vec![0; k];
 // Fill initial reservoir
-for (int i = 0; i < k; i++)
+for i in 0..k {
     reservoir[i] = stream[i];
+}
 
 // Replace with decreasing probability
-for (int i = k; i < N; i++) {
-    int j = rand() % (i + 1);
-    if (j < k)
+for i in k..N {
+    let j = (unsafe { libc::rand() } as usize) % (i + 1);
+    if j < k {
         reservoir[j] = stream[i];
+    }
 }
 ```
 
@@ -62,23 +64,28 @@ Estimate the number of distinct elements in a stream (cardinality). Uses ~1.5 KB
 - Harmonic mean instead of geometric mean (reduces outlier influence).
 - Bias correction for small and large cardinalities.
 
-```c
+```rust
 // Simplified HyperLogLog
-int registers[65536];  // precision = 16 (typical)
-
-void add(uint64_t hash) {
-    int idx = hash & 0xFFFF;  // First 16 bits: register index
-    int zeros = __builtin_clzll(hash | 0xFFFF) + 1;  // Count leading zeros
-    registers[idx] = max(registers[idx], zeros);
+struct HyperLogLog {
+    registers: [u32; 65536],  // precision = 16 (typical)
 }
 
-double estimate() {
-    double sum = 0;
-    for (int i = 0; i < 65536; i++)
-        sum += 1.0 / (1 << registers[i]);
-    double raw = 0.7213 * 65536 * 65536 / sum;  // Alpha_16 * m^2 / sum
-    // Bias correction for small/large ranges...
-    return raw;
+impl HyperLogLog {
+    fn add(&mut self, hash: u64) {
+        let idx = (hash & 0xFFFF) as usize;  // First 16 bits: register index
+        let zeros = (hash | 0xFFFF).leading_zeros() + 1;  // Count leading zeros
+        self.registers[idx] = self.registers[idx].max(zeros);
+    }
+
+    fn estimate(&self) -> f64 {
+        let mut sum = 0.0;
+        for i in 0..65536 {
+            sum += 1.0 / ((1u64 << self.registers[i]) as f64);
+        }
+        let raw = 0.7213 * 65536.0 * 65536.0 / sum;  // Alpha_16 * m^2 / sum
+        // Bias correction for small/large ranges...
+        raw
+    }
 }
 ```
 
