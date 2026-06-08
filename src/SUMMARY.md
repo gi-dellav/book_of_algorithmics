@@ -169,3 +169,78 @@
 - [MapReduce](distributed/mapreduce/index.md)
 - [Actor Model](distributed/actor.md)
 - [Cloud Computing](distributed/cloud.md)
+
+# Graph Algorithms
+
+- [The Hidden Cost of Pointer Chasing](graphs/_index.md)
+- [Graph Representations](graphs/representations.md)
+- [BFS and Dijkstra](graphs/bfs-dijkstra.md)
+- [Connected Components and Union-Find](graphs/components.md)
+- [Minimum Spanning Tree](graphs/mst.md)
+- [PageRank and SpMV](graphs/pagerank.md)
+
+# String Algorithms
+
+- [Strings Are Not Just Characters](strings/_index.md)
+- [Exact Pattern Matching](strings/exact-matching.md)
+- [Multi-Pattern Matching](strings/multi-pattern.md)
+- [Approximate String Matching](strings/approximate.md)
+- [Suffix Arrays and LCP](strings/suffix-arrays.md)
+- [FM-Index and Burrows-Wheeler](strings/fm-index.md)
+
+# Dynamic Programming
+
+- [Tables, Not Recursion](dynamic-programming/_index.md)
+- [Cache-Efficient DP](dynamic-programming/cache-efficient.md)
+- [DP Optimizations](dynamic-programming/optimizations.md)
+- [Bitmask DP](dynamic-programming/bitmask.md)
+- [Parallel DP](dynamic-programming/parallel.md)
+
+# Integer Compression
+
+- [Packing Integers Tighter](integer-compression/_index.md)
+- [Variable-Byte and Delta Coding](integer-compression/varint.md)
+- [Bit-Packing and SIMD](integer-compression/bit-packing.md)
+- [Elias-Fano Encoding](integer-compression/elias-fano.md)
+- [Frame-of-Reference and Dictionary Coding](integer-compression/frame-of-reference.md)
+
+# Linear Algebra Algorithms
+
+- [The Computational Backbone of Science](linear-algebra/_index.md)
+- [BLAS and LAPACK](linear-algebra/blas-lapack.md)
+- [Triangular Systems and Cholesky](linear-algebra/triangular-cholesky.md)
+- [LU Factorization and Pivoting](linear-algebra/lu-factorization.md)
+- [QR Factorization and Least Squares](linear-algebra/qr-least-squares.md)
+
+# Statistical Computation
+
+- [Numbers from Data](statistical-computation/_index.md)
+- [Random Sampling and Monte Carlo](statistical-computation/sampling.md)
+- [OLS Regression and Diagnostics](statistical-computation/ols-regression.md)
+- [Bootstrap and Permutation Tests](statistical-computation/bootstrap.md)
+- [MCMC and Gibbs Sampling](statistical-computation/mcmc.md)
+
+# Global Optimizations
+
+- [Finding the Best (in High Dimensions)](global-optimizations/_index.md)
+- [Gradient Descent and Acceleration](global-optimizations/gradient-descent.md)
+- [Quasi-Newton Methods](global-optimizations/quasi-newton.md)
+- [Constrained Optimization](global-optimizations/constrained.md)
+- [Derivative-Free Optimization](global-optimizations/derivative-free.md)
+
+# Machine Learning (Part I)
+
+- [Learning Without Neural Networks](machine-learning-1/_index.md)
+- [Linear Models](machine-learning-1/linear-models.md)
+- [Tree-Based Methods](machine-learning-1/tree-methods.md)
+- [Kernel Methods and SVMs](machine-learning-1/kernel-methods.md)
+- [Nearest Neighbors and Clustering](machine-learning-1/nearest-neighbors.md)
+
+# Machine Learning (Part II)
+
+- [Learning with Neural Networks](machine-learning-2/_index.md)
+- [Backpropagation Explained Simply](machine-learning-2/backpropagation.md)
+- [Neural Network Primitives](machine-learning-2/primitives.md)
+- [Automatic Differentiation](machine-learning-2/autodiff.md)
+- [Hardware-Aware Training](machine-learning-2/hardware-training.md)
+- [Distributed Training](machine-learning-2/distributed-training.md)
